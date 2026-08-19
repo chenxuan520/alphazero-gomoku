@@ -422,8 +422,9 @@ loss 权重（2 -> 1~1.2）以提高 policy prior 的尖锐度，并提高战术
 ## 持久 MCTS 子树复用工程实验（2026-08-19）
 
 原实现每次落子都 `nodes_.clear()/edges_.clear()`，完全丢弃上一手搜索树。新增
-可选 `reuse_tree_`、`AdvanceRoot()` 与不可达分支压缩（5万节点阈值）；默认
-关闭，当前运行中的训练器行为不变。还修正标准 Dirichlet 混合顺序（Gamma
+可选 `reuse_tree_`、`AdvanceRoot()` 与严格 node/edge 有界缓存；超过预算就释放
+整树并在下一手重建，不做双树复制压缩。默认关闭，当前运行中的训练器行为不变。
+还增加显式标准 Dirichlet 混合模式（Gamma
 先归一化再按 epsilon 混合）、arena 每局确定 seed、判停全谱后的条件复核。
 
 使用 iter405 对 L6 老师、每档黑25+白25、标准 Dirichlet epsilon=.25/
@@ -437,5 +438,21 @@ alpha=.3 做最终 fresh/reuse A/B（修正噪声公式后的结果）：
 
 复用不是把 48 直接变成 600，但 48 sims 下胜率提高 10 个百分点、wall time
 下降 21%；24 sims 下总胜率持平但耗时略降。C++ 机械测试覆盖换根、继承
-visits、默认关闭、噪声权重和树压缩；`4153 checks, 0 failed`。审查前受错误
+visits、默认关闭、标准噪声和严格缓存预算；`4411 checks, 0 failed`。审查前受错误
 Dirichlet 混合影响的实验数据已丢弃，不作为结论。
+
+### 子树复用最终安全收敛与批准版复测
+
+最终实现经过多轮独立审查和故障注入后，额外具备：非法 action 防越界；node/edge
+分配硬预算；默认关闭时 arena/gate RNG 与无噪声语义逐字兼容稳定基线；显式标准
+Dirichlet 与按局 seed 在 workers=1/8 下结果一致；版本化
+`checkpoint.latest.N.{net,opt,state}`、`checkpoint.best.N.net`、
+`checkpoint.buffer.N.bin` 由单个 `latest.current = latest best buffer` 原子提交；
+文件和目录均 fsync；monitor 使用 nonce 请求 trainer 在完整 iteration 边界暂停，
+失败必撤销请求继续训练，不再外部 SIGTERM；三条件通过后 trainer 自行干净退出。
+
+批准版使用 iter405、L6、48 sims、标准噪声、seed5151 再跑黑20+白20：fresh
+黑17/20、白9/20，总26/40=65%，187秒；reuse 黑15/20、白12/20，
+总27/40=67.5%，122秒。总胜率小幅提高，耗时下降34.8%。原始日志：
+`runtime/reuse_final_l6_s48_r{0,1}.log`。该复测证明安全收敛没有吃掉复用收益；
+但它仍是低预算优化，不等价于600-sim正式强度。
