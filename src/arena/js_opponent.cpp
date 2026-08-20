@@ -1,26 +1,41 @@
 #include "arena/js_opponent.h"
 
 #include <sys/types.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
+#include <signal.h>
 
 namespace az {
 
 Subprocess::~Subprocess() { Kill(); }
 
-bool Subprocess::Start(const std::string &command) {
+bool Subprocess::Start(const char *executable, const char *argument) {
   int in_pipe[2], out_pipe[2];
   if (pipe(in_pipe) != 0 || pipe(out_pipe) != 0) {
     return false;
   }
+  const pid_t parent_pid = getpid();
   pid_t pid = fork();
   if (pid < 0) {
     return false;
   }
   if (pid == 0) {
+#ifdef __linux__
+    // A killed/timed-out gauntlet must not leave hundreds of persistent Node
+    // engines adopted by init. Arm the child before exec and close the small
+    // race where the parent dies between fork() and prctl().
+    if (prctl(PR_SET_PDEATHSIG, SIGTERM) != 0 ||
+        getppid() != parent_pid) {
+      _exit(127);
+    }
+#endif
     // child: stdin <- in_pipe[0], stdout -> out_pipe[1]
     dup2(in_pipe[0], STDIN_FILENO);
     dup2(out_pipe[1], STDOUT_FILENO);
@@ -28,7 +43,12 @@ bool Subprocess::Start(const std::string &command) {
     close(in_pipe[1]);
     close(out_pipe[0]);
     close(out_pipe[1]);
-    execl("/bin/sh", "sh", "-c", command.c_str(), (char *)nullptr);
+    const int null_fd = open("/dev/null", O_WRONLY);
+    if (null_fd >= 0) {
+      dup2(null_fd, STDERR_FILENO);
+      close(null_fd);
+    }
+    execlp(executable, executable, argument, (char *)nullptr);
     _exit(127);
   }
   close(in_pipe[0]);
@@ -87,7 +107,7 @@ void Subprocess::Kill() {
 
 bool JsOpponent::Start() {
   // engine is at <repo>/tools/js_engine/engine.js; run from repo root
-  return process_.Start("node tools/js_engine/engine.js 2>/dev/null");
+  return process_.Start("node", "tools/js_engine/engine.js");
 }
 
 int JsOpponent::PickMove(const Gomoku &game) {

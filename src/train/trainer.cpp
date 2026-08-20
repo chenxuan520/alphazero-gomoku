@@ -763,22 +763,28 @@ void Trainer::Run() {
     WriteLog("{\"iter\":%d,\"phase\":\"hard_set\",\"size\":%zu}", iteration_,
              hard_indices_.size());
     config_.selfplay_.hard_seed_indices_ = &hard_indices_;
+    const auto selfplay_start = std::chrono::steady_clock::now();
     SelfPlayStats sp = RunSelfPlay(net_, config_.selfplay_, buffer_,
                                    teacher_net_.get());
+    const double selfplay_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - selfplay_start).count();
     const double avg_moves =
         sp.games > 0 ? sp.moves_total / sp.games : 0.0;
     WriteLog("{\"iter\":%d,\"phase\":\"selfplay_done\",\"games\":%d,"
              "\"avg_moves\":%.1f,\"cache_size\":%.0f,"
               "\"cache_hit_rate\":%.3f,\"buffer\":%zu,"
-              "\"student_targets\":%zu,\"teacher_targets\":%zu}",
-              iteration_, sp.games, avg_moves, sp.eval_cache_size,
-              sp.eval_cache_hit_rate, buffer_.Size(),
-              sp.student_policy_targets, sp.teacher_policy_targets);
+               "\"student_targets\":%zu,\"teacher_targets\":%zu,"
+               "\"elapsed_sec\":%.3f}",
+               iteration_, sp.games, avg_moves, sp.eval_cache_size,
+               sp.eval_cache_hit_rate, buffer_.Size(),
+               sp.student_policy_targets, sp.teacher_policy_targets,
+               selfplay_seconds);
 
     // training steps
     double policy_loss_sum = 0.0, value_loss_sum = 0.0;
     const int steps = config_.train_steps_;
     int done_steps = 0;
+    const auto train_start = std::chrono::steady_clock::now();
     for (int s = 0; s < steps; ++s) {
       float pl = 0.0f, vl = 0.0f;
       if (!TrainStep(config_.batch_size_, config_.learning_rate_, pl, vl)) {
@@ -789,10 +795,13 @@ void Trainer::Run() {
       ++done_steps;
     }
     if (done_steps > 0) {
+      const double train_seconds = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - train_start).count();
       WriteLog("{\"iter\":%d,\"phase\":\"train_done\",\"steps\":%d,"
-               "\"policy_loss\":%.4f,\"value_loss\":%.4f,\"step\":%d}",
+               "\"policy_loss\":%.4f,\"value_loss\":%.4f,\"step\":%d,"
+               "\"elapsed_sec\":%.3f}",
                iteration_, done_steps, policy_loss_sum / done_steps,
-               value_loss_sum / done_steps, global_step_);
+               value_loss_sum / done_steps, global_step_, train_seconds);
     }
 
     const bool latest_prepared = Checkpoint("latest");

@@ -7,13 +7,13 @@
 
 namespace az {
 
-// Bidirectional pipe to a child process (fork+exec, inherited PATH lookup).
+// Bidirectional pipe to one directly exec'ed child process.
 class Subprocess {
 public:
   Subprocess() = default;
   ~Subprocess();
 
-  bool Start(const std::string &command); // e.g. "node tools/js_engine/engine.js"
+  bool Start(const char *executable, const char *argument);
   // Writes a line (newline appended) and reads one response line.
   // Returns false on broken pipe/EOF.
   bool Exchange(const std::string &request, std::string &response);
