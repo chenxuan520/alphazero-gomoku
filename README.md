@@ -2,18 +2,23 @@
 
 15×15 自由规则五子棋的 AlphaZero 式自我对弈强化学习项目，纯 CPU 训练。
 
-**状态：已通关** —— 自对弈策略/价值标签（无 teacher 动作/价值标签）打穿 `game-old` 全部 7 档 AI。
-发布冠军在上级目录 `../public/champion_final-348b1b34.net`（32ch/4blocks，19 万参数）；
-完整训练档案见 `../TRAINING.md` 与 `../training/TRAINING_NOTES.md`。
+**状态：主线已在 iter440 收口。** 纯自我对弈（无 teacher 动作/价值标签）共完成
+440 个唯一 iteration、33,920 局去重自对弈（含重启实际 35,000 局）、约 133 万
+局面和 87,280 个 Adam step。最终网络 32ch/4blocks、191,853 个序列化参数。
+
+- 最终训练快照：`runtime/final_iter440.net`
+  (`66aa74b70cd2a73b1c61616df13aaa4a61073d3c5cdf10c1979084212827b2c4`)
+- 收口时 gate best：`runtime/best_at_stop_iter435.net`
+- 正式网页稳定模型：iter330（低预算综合表现更稳）
+- 完整验收、横评、错误修复、停止理由见 `TRAINING_NOTES.md`
 
 复现验收：
 ```bash
-./bin/alphazero gauntlet --model ../public/champion_final-348b1b34.net \
-    --levels 1,2,3,4,5,6,7 --games 10 --workers 24 --sims 800 \
-    --dir-eps 0
+./bin/alphazero gauntlet --model runtime/final_iter440.net \
+    --levels 1,2,3,4,5,6,7 --games 10 --workers 24 --sims 800
 
 # 只测模型执白/黑(例如 L7 后手 20 局)
-./bin/alphazero gauntlet --model ../public/champion_final-348b1b34.net \
+./bin/alphazero gauntlet --model runtime/best_at_stop_iter435.net \
     --levels 7 --games 20 --workers 8 --sims 96 --color white
 ```
 
@@ -35,49 +40,50 @@
 - **训练目标**：`PolicyValueLoss` = 合法手 masked 策略交叉熵 + 价值 MSE；AdamW
   （权重衰减只作用于 conv/linear 权重，BN/bias 不衰减）。
 - **数据增广**：棋盘 8 对称（4 旋转 × 镜像），采样时随机取一种同时变换平面与策略目标。
-- **评估缓存**：自对弈同轮内共享局面哈希缓存（己方/对方子布局 → policy/value），
-  键包含当前行棋方、上一手位置和完整棋盘；20+ 并行对局下开局重复局面直接
-  命中，以内存换 CPU。权重更新即失效。
+- **评估缓存**：自对弈同轮内共享局面缓存，键包含行棋方、上一手和完整棋盘；
+  并行对局的重复开局直接命中，权重更新即失效。
 
-每轮结构（`train` 命令的默认节奏）：
+最终主线配方：
 
 | 阶段 | 默认量 |
 | --- | --- |
-| 自对弈 | 40 局 × 20 worker，每步 100 次 MCTS 模拟，上限 200 手判和 |
-| 训练 | 80 步 × batch 128（采样 + 8 对称增广），AdamW lr=1e-3 |
+| 自对弈 | 80 局 × 48 worker，每步 600 次 MCTS 模拟，上限 200 手截断 |
+| 训练 | 200 步 × batch 128（recency + hard mining + 8 对称），AdamW lr=1e-3 |
 | 评估 | 每 5 轮：vs 随机棋手 20 局 + 与 best.net 擂台 20 局 |
-| 保存 | 每轮 latest.net/opt/state，晋级时 best.net，每 10 轮 buffer.bin |
+| 保存 | latest/best/replay 版本化 bundle，由 `latest.current` 原子三元组提交 |
 
-吞吐参考（24 核保障值）：并发前向约 880 evals/s（40 worker 实测），
-单轮自对弈约 6~9 分钟 + 训练约 2 分钟。
+主训练绑定 CPU0-55；低预算横评占 CPU56-63。最终阶段约 40–55 分钟/iteration。
 
 ## 构建与测试
 
 ```bash
 mkdir -p build && cd build && cmake .. -DCMAKE_BUILD_TYPE=Release && make -j
-cd .. && ./bin/test_az        # 4100 checks, 0 failed
+cd .. && ./bin/test_az        # 4411 checks, 0 failed
 ```
 
 ## 命令
 
 ```bash
-# 正式训练（后台长跑建议 nohup）
-./bin/alphazero train --workers 20 --games-per-iter 40 --sims 100 \
-    --train-steps 80 --batch 128 --run-dir runtime --seed 42
+# 最终正式配方（项目已收口；仅在复现实验时重启）
+./bin/alphazero train --run-dir runtime --workers 48 --games-per-iter 80 \
+    --sims 600 --train-steps 200 --batch 128 --lr .001 --wd .0001 \
+    --value-weight 2 --buffer 200000 --max-moves 200 --temp-moves 6 \
+    --seed-hard-prob .3 --cpuct .8 --dir-eps .25 --dir-alpha .3 --fpu 0 \
+    --gate-every 5 --gate-games 20 --gate-threshold .55 --save-buffer-every 10
 
-# 断点续训：同参数重跑即可（自动读 runtime/latest.net + latest.opt + latest.state）
+# 断点续训：同参数重跑即可（读取 latest.current 指定的 latest/best/replay bundle）
 # --no-resume 冷启动；--no-cache 关评估缓存
 
 # 模型 vs 随机棋手（交替执色）
 ./bin/alphazero eval --model runtime/best.net --games 20 --sims 100 --workers 8
 
 # 两个模型打擂台
-./bin/alphazero arena --model-a runtime/latest.net --model-b runtime/best.net \
-    --games 50 --sims 48 --temp-moves 6
+./bin/alphazero arena --model-a runtime/final_iter440.net \
+    --model-b runtime/best_at_stop_iter435.net --games 50 --sims 48
 
-# 相同逐局根噪声的模型 vs JS 档位横评
-./bin/alphazero gauntlet --model runtime/best.net --levels 1,2,3,4,5,6 \
-    --games 25 --sims 48 --dir-eps .25 --dir-alpha .3 --seed 4242
+# 显式开启严格有界子树复用（默认关闭，方便 A/B）
+./bin/alphazero arena --model-a runtime/iter405.net --model-b runtime/iter360.net \
+    --games 50 --sims 48 --reuse-tree 1
 
 # 人机对战（你是白棋 O，输入 "行 列"）
 ./bin/alphazero play --model runtime/best.net --sims 100
@@ -103,17 +109,6 @@ grep '"phase":"gate"' runtime/train.log  # 看擂台晋级记录
 - `cache_hit_rate`：评估缓存命中率，开局重复局面多时 30%+ 正常。
 - `gate`：`challenger_wins/best_wins/draws/rate`，`promoted` 表示新网络晋级为 best。
 
-可选 loss 曲线分析需要项目私有虚拟环境，并依赖训练后生成的 `runtime/train.log`：
-
-```bash
-python3 -m venv .venv-analysis
-.venv-analysis/bin/pip install -r tools/requirements-analysis.txt
-.venv-analysis/bin/python tools/analyze_loss_scipy.py
-```
-
-本模型包已提供生成后的 `../training/policy_loss_history.csv`、拟合 JSON 与 PNG；
-无需重跑分析即可核对书中曲线。
-
 ## 文件布局
 
 ```
@@ -122,7 +117,7 @@ src/game/       Gomoku 规则/编码/8对称
 src/mcts/       MCTS (PUCT + Dirichlet 根噪声)
 src/train/      评估器(INetEvaluator/缓存) / 回放池 / 自对弈 / 擂台 / 训练器
 test/           单元测试(规则/编码/对称/MCTS 必杀局面)
-runtime/        训练产物：latest.net best.net latest.opt latest.state buffer.bin train.log
+runtime/        训练产物：版本化 latest/best/replay bundle、latest.current、train.log
 runtime.out     nohup stdout
 ```
 
@@ -132,3 +127,8 @@ runtime.out     nohup stdout
 - **终局价值约定**：赢的局面返回 -1（按"该走棋的一方视角"的约定，终局时没有下一手，行棋方即输家视角），保证 MCTS 回溯逐层翻转的符号一致。
 - **worker 网络副本**：组件内部线程池不可多实例并发复用，所以每个自对弈 worker 持有独立网络副本（拷贝含 BN running statistics，不只可训练参数）。
 - **无 resign**：v1 未做认输加速，弱网阶段价值信号不可靠，先靠 max-moves 截断。
+- **MCTS 子树复用默认关闭**：显式开启后真实落子继承 child subtree；node/edge
+  有硬预算，触顶丢树 fresh 重建。批准版 L6@48 耗时 187s→122s。
+- **崩溃安全 checkpoint**：latest/best/replay 三者准备并 fsync 后，只通过一次
+  `latest.current` rename 提交；平台 monitor 用 nonce 让 trainer 在完整轮边界暂停，
+  不再外部 kill。
