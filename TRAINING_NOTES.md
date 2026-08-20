@@ -2,6 +2,29 @@
 
 > 持续滚动更新，最新在最上面。结构化训练数据看 `runtime/train.log`（JSON 行），这份是人的思考/结论/问题记录。
 
+## 2026-08-20 低 simulations policy 蒸馏收官
+
+- 独立分支 `fast-policy-distillation`，冻结 iter440 作为 student bootstrap、
+  best baseline 与600-sim teacher；student 行为预算96，70%局面用 teacher
+  visit policy 替换训练 policy target，真实动作始终来自 student，z 仍来自
+  student 自对弈终局。
+- 全网更新 pilot gate 15:25，并在 L7@96 白方跌到0%，判废。
+- 新增 `--policy-head-only 1`：trunk/value/BN running stats 全冻结，只训练
+  policy conv/BN/FC；optimizer 模式绑定且错误模式 fail-closed。文件审计确认
+  header/trunk/value 0 字节变化。测试4509 checks/0 failed，reviewer APPROVED。
+- `lr=3e-4` pilot gate 21:19，但产生 L7@48=0%、L7@96=100%的预算翻转。
+- `lr=1e-4` 的 iter4 为首个稳定点，冻结为
+  `runtime_fast/champion_fast_iter4.net`，SHA
+  `1bbd86347ee4942f8b99c9732f8afbd20c896bd5ef703eac87f11f45dedb26ad`。
+- 新种子25局/颜色：48 reuse L6黑88/白56、L7 100/100；96 fresh
+  L6黑96/白76、L7 100/100。600 sims 对 iter440 直接40:0；L6/L7
+  25局/颜色为100/96/100/100，最大单颜色回退4pp，全部发布门禁通过。
+- 主线 iter440、v1.0.0、原 replay/optimizer 不变；fast 模型仅用于低预算
+  推理路径。
+- 吞吐复核：self-play 稳态约36核满载，pilot40局天然最多40 workers；正式
+  配方应至少48局，推荐80局。清理1155个历史孤儿 Node 引擎（累计RSS约
+  61GiB/CPU约4.3核），并用 direct exec + PDEATHSIG 根治超时 gauntlet 泄漏。
+
 ## 2026-08-18 · 稳定冠军 vs L7 后手搜索预算阈值
 
 - 固定模型 `runtime/champion_final.net`，仅测 L7、模型执白、每档 20 局；关闭根噪声、根访问次数贪心落子。

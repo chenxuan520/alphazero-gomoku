@@ -62,6 +62,44 @@ changed. This follows the conservative first experiment in the research plan:
 distill the deep-search policy without damaging the value estimate on which
 600-simulation search depends.
 
+## Pilot 2 result: policy-only fast model accepted
+
+The first policy-only run used learning rate `3e-4`. Its gate improved to
+21:19 but the final policy became budget-sensitive: L7 was perfect at 96 sims
+and 0% at 48 sims. A second run changed only the learning rate to `1e-4` and
+saved every iteration. Iteration 4 was the first robust cross-budget point and
+is frozen as `runtime_fast/champion_fast_iter4.net`:
+
+- SHA-256: `1bbd86347ee4942f8b99c9732f8afbd20c896bd5ef703eac87f11f45dedb26ad`;
+- byte audit versus iter440: header/trunk/value unchanged, only policy head
+  changed;
+- L6/L7 at 48 sims with bounded subtree reuse, 25 games/color: L6 88%/56%,
+  L7 100%/100%; iter330 scored L6 56%/64% and L7 100%/100%;
+- L6/L7 at 96 fresh-tree sims: L6 96%/76%, L7 100%/100%; iter330 scored
+  84%/28% and 100%/0%, iter440 scored 92%/68% and 100%/100%;
+- direct 600-sim arena versus iter440: 40:0, winning both colors;
+- 600-sim L6/L7 confirmation, 25 games/color: L6 100%/96%, L7 100%/100%;
+  the maximum color-specific regression versus iter440 was 4 percentage
+  points, within the pre-registered 5-point guard.
+
+The accepted model improves the browser-oriented low-simulation path without
+reducing the value/trunk representation used by high-budget search. Frozen
+iter440 remains the mainline training artifact and v1.0.0 regression reference.
+
+## Throughput engineering
+
+Instantaneous `pidstat` during self-play measured about 36 fully busy cores;
+the earlier 15-core number was lifetime-average `ps` output plus the end-of-
+iteration straggler tail. Forty pilot games can activate at most 40 of 48
+workers. Production runs should use at least 48 games (normally 80) to
+amortize that tail.
+
+An unrelated but material host leak was removed: 1,155 orphaned Node opponent
+engines from aborted gauntlets held about 61 GiB summed RSS and 4.3 CPU cores.
+`Subprocess` now directly execs Node with a Linux parent-death signal instead
+of using `/bin/sh -c`; killing a real gauntlet was verified to kill its Node
+child. Training logs now include self-play and optimizer phase durations.
+
 ## Release gates
 
 A fast model is publishable only when all hold against fixed openings/seeds:
