@@ -45,6 +45,23 @@ taskset -c 0-55 ./bin/alphazero train \
 The pilot uses 40 games per iteration to obtain an early signal. A surviving
 candidate continues with 80 games per iteration.
 
+## Pilot 1 result: full-network update rejected
+
+The five-iteration pilot completed, but the candidate lost its 96-simulation
+gate to frozen iter440, 15:25. Fixed-seed L6/L7 gauntlets showed a useful but
+unsafe split: L6 improved at both 48 and 96 simulations, while L7 as white at
+96 fell from iter440's 20/20 to 0/20. Updating the shared trunk/value path was
+therefore rejected rather than published.
+
+The second pilot adds `--policy-head-only 1`. It freezes the trunk and value
+head, keeps every BatchNorm running statistic fixed, and updates only
+`policy.conv`, `policy.norm`, and `policy.fc`. The optimizer checkpoint is
+mode-specific and a mode mismatch fails closed. File-level verification showed
+zero changed bytes in the header/trunk/value regions; the policy region alone
+changed. This follows the conservative first experiment in the research plan:
+distill the deep-search policy without damaging the value estimate on which
+600-simulation search depends.
+
 ## Release gates
 
 A fast model is publishable only when all hold against fixed openings/seeds:

@@ -55,6 +55,9 @@ public:
   RC Backward(const std::vector<float> &grad_policy_logits,
               const std::vector<float> &grad_values,
               FloatTensor4D &grad_input);
+  // Backpropagates only through policy FC/BN/conv. The trunk and value head
+  // remain frozen and no gradients/caches below the policy branch are touched.
+  RC BackwardPolicyHead(const std::vector<float> &grad_policy_logits);
   void ZeroGrad();
 
   const Config &config() const { return config_; }
@@ -68,7 +71,8 @@ public:
   BatchNorm2D &value_norm() { return value_norm_; }
   FloatLinear &value_hidden() { return value_hidden_; }
   FloatLinear &value_output() { return value_output_; }
-  std::vector<TrainableParameter> TrainableParameters();
+  std::vector<TrainableParameter>
+  TrainableParameters(bool policy_head_only = false);
   RC Save(const std::string &file) const;
   RC Load(const std::string &file);
   std::size_t parameter_count() const;

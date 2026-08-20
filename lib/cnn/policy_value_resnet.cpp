@@ -527,6 +527,50 @@ PolicyValueResNet::RC PolicyValueResNet::Backward(
   return SUCCESS;
 }
 
+PolicyValueResNet::RC PolicyValueResNet::BackwardPolicyHead(
+    const std::vector<float> &grad_policy_logits) {
+  if (!is_init_) {
+    err_msg_ = "[PolicyValueResNet::BackwardPolicyHead] not initialized";
+    return NOT_INIT;
+  }
+  if (!has_cache_) {
+    err_msg_ = "[PolicyValueResNet::BackwardPolicyHead] missing training cache";
+    return MISSING_CACHE;
+  }
+  if (grad_policy_logits.size() !=
+      static_cast<std::size_t>(cached_batch_) * config_.policy_size_) {
+    err_msg_ = "[PolicyValueResNet::BackwardPolicyHead] invalid gradient shape";
+    return INVALID_DATA;
+  }
+  std::vector<float> grad_policy_flat;
+  if (policy_linear_.Backward(grad_policy_logits, grad_policy_flat) !=
+      FloatLinear::SUCCESS) {
+    err_msg_ = policy_linear_.err_msg();
+    return INVALID_DATA;
+  }
+  FloatTensor4D grad_policy = UnflattenNCHW(
+      grad_policy_flat, cached_batch_, config_.policy_channels_,
+      config_.board_height_, config_.board_width_);
+  for (std::size_t index = 0; index < grad_policy.size(); index++) {
+    if (policy_relu_cache_.values()[index] <= 0.0f) {
+      grad_policy.values()[index] = 0.0f;
+    }
+  }
+  FloatTensor4D grad_policy_conv;
+  if (policy_norm_.Backward(grad_policy, grad_policy_conv) !=
+      BatchNorm2D::SUCCESS) {
+    err_msg_ = policy_norm_.err_msg();
+    return INVALID_DATA;
+  }
+  FloatTensor4D unused_grad_trunk;
+  if (policy_conv_.Backward(grad_policy_conv, unused_grad_trunk) !=
+      BatchedConv2D::SUCCESS) {
+    err_msg_ = policy_conv_.err_msg();
+    return INVALID_DATA;
+  }
+  return SUCCESS;
+}
+
 void PolicyValueResNet::ZeroGrad() {
   stem_conv_.ZeroGrad();
   stem_norm_.ZeroGrad();
@@ -543,7 +587,7 @@ void PolicyValueResNet::ZeroGrad() {
 }
 
 std::vector<PolicyValueResNet::TrainableParameter>
-PolicyValueResNet::TrainableParameters() {
+PolicyValueResNet::TrainableParameters(bool policy_head_only) {
   std::vector<TrainableParameter> parameters;
   auto add_convolution =
       [&](const std::string &prefix, BatchedConv2D &convolution) {
@@ -594,22 +638,26 @@ PolicyValueResNet::TrainableParameters() {
     }
   };
 
-  add_convolution("stem.conv", stem_conv_);
-  add_normalization("stem.norm", stem_norm_);
-  for (int index = 0; index < static_cast<int>(blocks_.size()); index++) {
-    const std::string prefix = "block." + std::to_string(index);
-    add_convolution(prefix + ".conv1", blocks_[index].conv1());
-    add_normalization(prefix + ".norm1", blocks_[index].norm1());
-    add_convolution(prefix + ".conv2", blocks_[index].conv2());
-    add_normalization(prefix + ".norm2", blocks_[index].norm2());
+  if (!policy_head_only) {
+    add_convolution("stem.conv", stem_conv_);
+    add_normalization("stem.norm", stem_norm_);
+    for (int index = 0; index < static_cast<int>(blocks_.size()); index++) {
+      const std::string prefix = "block." + std::to_string(index);
+      add_convolution(prefix + ".conv1", blocks_[index].conv1());
+      add_normalization(prefix + ".norm1", blocks_[index].norm1());
+      add_convolution(prefix + ".conv2", blocks_[index].conv2());
+      add_normalization(prefix + ".norm2", blocks_[index].norm2());
+    }
   }
   add_convolution("policy.conv", policy_conv_);
   add_normalization("policy.norm", policy_norm_);
   add_linear("policy.fc", policy_linear_);
-  add_convolution("value.conv", value_conv_);
-  add_normalization("value.norm", value_norm_);
-  add_linear("value.hidden", value_hidden_);
-  add_linear("value.output", value_output_);
+  if (!policy_head_only) {
+    add_convolution("value.conv", value_conv_);
+    add_normalization("value.norm", value_norm_);
+    add_linear("value.hidden", value_hidden_);
+    add_linear("value.output", value_output_);
+  }
   return parameters;
 }
 

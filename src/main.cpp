@@ -67,6 +67,7 @@ void PrintUsage() {
       "  --train-steps N (150)  --batch N (256)\n"
       "  --lr X (1e-3)  --wd X (1e-4)  --value-weight X\n"
       "  --hard-fraction X (.3)  --buffer N (200000)\n"
+      "  --policy-head-only 0|1 (0)\n"
       "  --resume 0|1  --cache 0|1\n"
       "  --init-model FILE  --init-best-model FILE\n"
       "  --teacher-model FILE  --teacher-sims N  --teacher-target-prob X\n"
@@ -458,6 +459,11 @@ int CmdTrain(int argc, char **argv) {
   config.selfplay_.temperature_move_cutoff_ = 12;
   config.selfplay_.mcts_.simulation_num_ = 100;
 
+  if (argc > 2 && !std::strcmp(argv[argc - 1], "--policy-head-only")) {
+    std::fprintf(stderr, "missing value for --policy-head-only (expected 0|1)\n");
+    return 1;
+  }
+
   for (int i = 2; i + 1 < argc; i += 2) {
     const char *key = argv[i];
     const char *value = argv[i + 1];
@@ -473,6 +479,13 @@ int CmdTrain(int argc, char **argv) {
     else if (!std::strcmp(key, "--wd")) config.weight_decay_ = std::atof(value);
     else if (!std::strcmp(key, "--value-weight")) config.value_weight_ = std::atof(value);
     else if (!std::strcmp(key, "--hard-fraction")) config.hard_fraction_ = std::atof(value);
+    else if (!std::strcmp(key, "--policy-head-only")) {
+      if (std::strcmp(value, "0") && std::strcmp(value, "1")) {
+        std::fprintf(stderr, "invalid --policy-head-only (expected 0|1)\n");
+        return 1;
+      }
+      config.policy_head_only_ = !std::strcmp(value, "1");
+    }
     else if (!std::strcmp(key, "--buffer")) config.buffer_capacity_ = std::stoul(value);
     else if (!std::strcmp(key, "--resume")) config.resume_ = std::atoi(value) != 0;
     else if (!std::strcmp(key, "--cache")) config.selfplay_.use_cache_ = std::atoi(value) != 0;

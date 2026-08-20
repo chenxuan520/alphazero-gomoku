@@ -213,7 +213,8 @@ bool Trainer::Init(const TrainConfig &config) {
   deeplearning::FloatAdamW::Config optimizer_config;
   optimizer_config.weight_decay_ = config_.weight_decay_;
   std::vector<std::size_t> sizes;
-  for (const auto &p : net_.TrainableParameters()) {
+  for (const auto &p :
+       net_.TrainableParameters(config_.policy_head_only_)) {
     sizes.push_back(p.value_->size());
   }
   if (optimizer_.Init(sizes, optimizer_config) !=
@@ -702,7 +703,8 @@ bool Trainer::TrainStep(int batch_size, float lr, float &policy_loss,
   }
 
   deeplearning::PolicyValueResNet::Output output;
-  if (net_.Forward(input, output, /*training=*/true) !=
+  if (net_.Forward(input, output, /*training=*/true,
+                   /*use_running_statistics=*/config_.policy_head_only_) !=
       deeplearning::PolicyValueResNet::SUCCESS) {
     std::fprintf(stderr, "[trainer] forward failed: %s\n",
                  net_.err_msg().c_str());
@@ -720,21 +722,25 @@ bool Trainer::TrainStep(int batch_size, float lr, float &policy_loss,
   policy_loss = result.policy_loss_;
   value_loss = result.value_loss_;
 
+  deeplearning::PolicyValueResNet::RC backward_rc;
   deeplearning::FloatTensor4D grad_input; // unused by caller
-  if (net_.Backward(result.grad_policy_logits_, result.grad_values_,
-                    grad_input) != deeplearning::PolicyValueResNet::SUCCESS) {
+  if (config_.policy_head_only_)
+    backward_rc = net_.BackwardPolicyHead(result.grad_policy_logits_);
+  else
+    backward_rc =
+        net_.Backward(result.grad_policy_logits_, result.grad_values_, grad_input);
+  if (backward_rc != deeplearning::PolicyValueResNet::SUCCESS) {
     std::fprintf(stderr, "[trainer] backward failed: %s\n",
                  net_.err_msg().c_str());
     return false;
   }
 
   // FloatAdamW: build parameter view in the SAME order as Init().
-  auto params = net_.TrainableParameters();
+  auto params = net_.TrainableParameters(config_.policy_head_only_);
   std::vector<deeplearning::FloatAdamW::Parameter> adamw_params;
   adamw_params.reserve(params.size());
-  for (auto &p : params) {
+  for (auto &p : params)
     adamw_params.push_back({p.value_, p.gradient_, p.apply_weight_decay_});
-  }
   if (optimizer_.Step(adamw_params, lr) != deeplearning::FloatAdamW::SUCCESS) {
     std::fprintf(stderr, "[trainer] step failed: %s\n",
                  optimizer_.err_msg().c_str());

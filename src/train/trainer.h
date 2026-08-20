@@ -23,6 +23,7 @@ struct TrainConfig {
   float weight_decay_ = 1e-4f;
   float value_weight_ = 1.0f;   // value head loss weight (policy fixed at 1)
   float hard_fraction_ = 0.3f;
+  bool policy_head_only_ = false;
   std::size_t buffer_capacity_ = 200000;
 
   std::string init_model_;

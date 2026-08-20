@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <random>
 #include <limits>
 #include <string>
@@ -719,6 +720,142 @@ void TestFastTrainerRejectsInvalidConfigAndMismatchedBest() {
   rmdir(dir);
 }
 
+void TestPolicyHeadOnlyTrainerFreezesTrunkValueAndBatchNorm() {
+  const char *dir = "/tmp/az_policy_head_only";
+  std::system("rm -rf /tmp/az_policy_head_only");
+  CHECK(mkdir(dir, 0755) == 0);
+  const std::string initial_path = std::string(dir) + "/initial.net";
+
+  deeplearning::PolicyValueResNet initial;
+  CHECK(initial.Init(TinyNetConfig(101)) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(initial.Save(initial_path) == deeplearning::PolicyValueResNet::SUCCESS);
+
+  std::vector<std::string> names;
+  std::vector<std::vector<float>> before_values;
+  for (const auto &parameter : initial.TrainableParameters()) {
+    names.push_back(parameter.name_);
+    before_values.push_back(*parameter.value_);
+  }
+  std::vector<std::vector<float>> before_running;
+  auto append_running = [&](const deeplearning::BatchNorm2D &normalization) {
+    before_running.push_back(normalization.running_mean());
+    before_running.push_back(normalization.running_variance());
+  };
+  append_running(initial.stem_norm());
+  for (const auto &block : initial.blocks()) {
+    append_running(block.norm1());
+    append_running(block.norm2());
+  }
+  append_running(initial.policy_norm());
+  append_running(initial.value_norm());
+
+  az::TrainConfig config;
+  config.net_ = TinyNetConfig(101);
+  config.run_dir_ = dir;
+  config.iterations_ = 1;
+  config.resume_ = false;
+  config.init_model_ = initial_path;
+  config.init_best_model_ = initial_path;
+  config.policy_head_only_ = true;
+  config.selfplay_.worker_num_ = 1;
+  config.selfplay_.game_num_ = 1;
+  config.selfplay_.mcts_.simulation_num_ = 1;
+  config.selfplay_.mcts_.dirichlet_epsilon_ = 0.0f;
+  config.selfplay_.temperature_move_cutoff_ = 0;
+  config.selfplay_.max_moves_ = 8;
+  config.train_steps_ = 1;
+  config.batch_size_ = 1;
+  config.buffer_capacity_ = 64;
+  config.hard_fraction_ = 0.0f;
+  config.gate_every_ = 100;
+  config.save_buffer_every_ = 1;
+  az::Trainer trainer;
+  CHECK(trainer.Init(config));
+  trainer.Run();
+
+  deeplearning::PolicyValueResNet trained;
+  CHECK(trained.Init(TinyNetConfig(101)) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(trained.Load(std::string(dir) + "/checkpoint.latest.1.net") ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  const auto after_parameters = trained.TrainableParameters();
+  CHECK(after_parameters.size() == before_values.size());
+  bool policy_changed = false;
+  for (std::size_t index = 0; index < after_parameters.size(); ++index) {
+    CHECK(after_parameters[index].name_ == names[index]);
+    const bool policy = names[index].compare(0, 7, "policy.") == 0;
+    if (policy)
+      policy_changed = policy_changed ||
+                       *after_parameters[index].value_ != before_values[index];
+    else
+      CHECK(*after_parameters[index].value_ == before_values[index]);
+  }
+  CHECK(policy_changed);
+
+  std::vector<std::vector<float>> after_running;
+  auto append_after = [&](const deeplearning::BatchNorm2D &normalization) {
+    after_running.push_back(normalization.running_mean());
+    after_running.push_back(normalization.running_variance());
+  };
+  append_after(trained.stem_norm());
+  for (const auto &block : trained.blocks()) {
+    append_after(block.norm1());
+    append_after(block.norm2());
+  }
+  append_after(trained.policy_norm());
+  append_after(trained.value_norm());
+  CHECK(after_running == before_running);
+
+  az::TrainConfig resume = config;
+  resume.iterations_ = 2;
+  resume.resume_ = true;
+  resume.init_model_.clear();
+  resume.init_best_model_.clear();
+  az::Trainer resumed_trainer;
+  CHECK(resumed_trainer.Init(resume));
+  resumed_trainer.Run();
+  CHECK(access((std::string(dir) + "/checkpoint.latest.2.net").c_str(),
+               F_OK) == 0);
+
+  az::TrainConfig wrong_mode = resume;
+  wrong_mode.iterations_ = 3;
+  wrong_mode.policy_head_only_ = false;
+  az::Trainer wrong_trainer;
+  CHECK(!wrong_trainer.Init(wrong_mode));
+  std::system("rm -rf /tmp/az_policy_head_only");
+}
+
+void TestBatchNormFixedStatisticsBackward() {
+  deeplearning::BatchNorm2D norm;
+  deeplearning::BatchNorm2D::Config config;
+  config.channels_ = 1;
+  CHECK(norm.Init(config) == deeplearning::BatchNorm2D::SUCCESS);
+  CHECK(norm.set_scale({1.2f}) == deeplearning::BatchNorm2D::SUCCESS);
+  CHECK(norm.set_bias({-0.3f}) == deeplearning::BatchNorm2D::SUCCESS);
+  CHECK(norm.set_running_mean({0.25f}) ==
+        deeplearning::BatchNorm2D::SUCCESS);
+  CHECK(norm.set_running_variance({1.5f}) ==
+        deeplearning::BatchNorm2D::SUCCESS);
+  deeplearning::FloatTensor4D input(1, 1, 1, 2);
+  input(0, 0, 0, 0) = 0.7f;
+  input(0, 0, 0, 1) = -0.2f;
+  deeplearning::FloatTensor4D output;
+  CHECK(norm.Forward(input, output, true, true) ==
+        deeplearning::BatchNorm2D::SUCCESS);
+  deeplearning::FloatTensor4D grad_output(1, 1, 1, 2);
+  grad_output(0, 0, 0, 0) = 0.7f;
+  grad_output(0, 0, 0, 1) = -0.4f;
+  deeplearning::FloatTensor4D grad_input;
+  CHECK(norm.Backward(grad_output, grad_input) ==
+        deeplearning::BatchNorm2D::SUCCESS);
+  const float coefficient = 1.2f / std::sqrt(1.5f + config.epsilon_);
+  CHECK(std::fabs(grad_input(0, 0, 0, 0) - coefficient * 0.7f) < 1e-6f);
+  CHECK(std::fabs(grad_input(0, 0, 0, 1) + coefficient * 0.4f) < 1e-6f);
+  CHECK(norm.running_mean() == std::vector<float>({0.25f}));
+  CHECK(norm.running_variance() == std::vector<float>({1.5f}));
+}
+
 } // namespace
 
 int main() {
@@ -741,6 +878,8 @@ int main() {
   TestTeacherTargetsDoNotControlBehavior();
   TestEvalCacheCountersAreThreadSafe();
   TestFastTrainerRejectsInvalidConfigAndMismatchedBest();
+  TestPolicyHeadOnlyTrainerFreezesTrunkValueAndBatchNorm();
+  TestBatchNormFixedStatisticsBackward();
 
   std::printf("%d checks, %d failed\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
