@@ -86,6 +86,32 @@ The accepted model improves the browser-oriented low-simulation path without
 reducing the value/trunk representation used by high-budget search. Frozen
 iter440 remains the mainline training artifact and v1.0.0 regression reference.
 
+### Full promotion-spectrum round robin
+
+For a generation-wide check, fast iter4 played every actual promoted snapshot
+from iter330 through iter435, plus final iter440 as a non-promotion reference.
+Each pairing used 50 games, balanced colors, 48 simulations, six temperature
+moves, normalized root noise (`epsilon=.25`, `alpha=.3`), fresh trees, and the
+same deterministic per-game seed stream:
+
+| Opponent | Fast wins/losses | Fast black | Fast white |
+|---|---:|---:|---:|
+| iter330 | 32:18 | 18/25 | 14/25 |
+| iter335 | 31:19 | 17/25 | 14/25 |
+| iter360 | 25:25 | 14/25 | 11/25 |
+| iter405 | 32:18 | 22/25 | 10/25 |
+| iter415 | 26:24 | 17/25 | 9/25 |
+| iter435 | 31:19 | 18/25 | 13/25 |
+| final iter440 reference | 26:24 | 19/25 | 7/25 |
+
+Across the six promoted generations, fast iter4 scored 177:123 (59.0%, roughly
++63 Elo by point estimate): five winning matchups, one draw, no loss. The
+iter440 reference was also a narrow 26:24. This is not evidence of uniform
+color-independent dominance—the aggregate first-player advantage remains
+large—but it does show that the accepted policy is not an opponent-specific
+L6/L7 overfit. The formal color-split and 600-simulation gates above remain the
+release authority.
+
 ## Throughput engineering
 
 Instantaneous `pidstat` during self-play measured about 36 fully busy cores;
