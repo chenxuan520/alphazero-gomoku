@@ -2,7 +2,8 @@
 
 15×15 自由规则五子棋的 AlphaZero 式自我对弈强化学习项目，纯 CPU 训练。
 
-**状态：主线已在 iter440 收口。** 纯自我对弈（无 teacher 动作/价值标签）共完成
+**状态：主线已在 iter440 收口。** 纯自我对弈（无 teacher 动作/价值标签；
+hard curriculum 仅用手写三/四连检测重采样自有错题）共完成
 440 个唯一 iteration、33,920 局去重自对弈（含重启实际 35,000 局）、约 133 万
 局面和 87,280 个 Adam step。最终网络 32ch/4blocks、191,853 个序列化参数。
 
@@ -11,6 +12,8 @@
 - 收口时 gate best：`runtime/best_at_stop_iter435.net`
 - 正式网页稳定模型：iter330（低预算综合表现更稳）
 - 完整验收、横评、错误修复、停止理由见 `TRAINING_NOTES.md`
+- GitHub：`https://github.com/chenxuan520/alphazero-gomoku`
+- 全部模型：GitHub Release `v1.0.0`（模型不进入 git 历史）
 
 复现验收：
 ```bash
@@ -91,6 +94,10 @@ cd .. && ./bin/test_az        # 4411 checks, 0 failed
 # 网络前向性能 / 规模
 ./bin/alphazero bench --concurrent 40 --iters 30
 ./bin/alphazero info
+
+# 原版 game-old 七档 AI 的两两排名（需同级 game-old 仓或显式环境变量）
+GAME_OLD_FRONTEND=~/self/game-old/gobang-web/frontend \
+  node tools/js_engine/rank_pair.js 6 7 20 4242
 ```
 
 ## 监控训练
@@ -120,6 +127,16 @@ test/           单元测试(规则/编码/对称/MCTS 必杀局面)
 runtime/        训练产物：版本化 latest/best/replay bundle、latest.current、train.log
 runtime.out     nohup stdout
 ```
+
+## Release 模型包
+
+仓库只跟踪源码与文档。`v1.0.0` Release 提供：
+
+- `alphazero-gomoku-all-models-v1.0.0.zip`：训练过程中保存的全部 `.net` 快照；
+- `alphazero-gomoku-final-v1.0.0.zip`：iter440 最终快照、iter435 gate best、
+  线上 iter330 以及模型清单/校验和。
+
+Replay Buffer（约 860MiB）与 optimizer state 不是模型权重，不上传 Release。
 
 ## 设计取舍备忘
 
