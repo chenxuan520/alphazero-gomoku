@@ -469,3 +469,22 @@ latest generation421、迁移后的 legacy best generation0、replay generation4
 plateau monitor 随后确认 `checkpoint_iter=421`、`condition_checkpoint_current=true`
 和 `condition_iteration_complete=true`。旧日志没有 `iteration_complete`，因此30轮
 未晋级计数从新协议的完整轮重新累计；这是故意的保守重置，宁可多训也不误停。
+
+## 主线训练在 iter440 人工收口（2026-08-20）
+
+用户在比较 iter415 与 iter360 后确认主线收益已很低，授权在 iter440 没有意外时
+停止。对照结果：48 sims 下 iter415 23:27 小负 iter360；600 sims 下双方25:25，
+高预算强度无可见提升。iter435 的12:8晋级也被判定为20局 gate 的高方差，而非
+实质突破。
+
+iter440 完成80局自对弈、200训练步、随机基线20:0、gate 10:10；policy loss
+2.6492、value loss1.1161，没有刷新 policy 历史最低2.6133@iter424。版本化 pointer
+`440 435 440` 与 net/best/replay 全部落盘后，trainer 通过 nonce 暂停握手写
+`plateau_stop_ack` 干净退出；watchdog/monitor 随后退出，无外部 kill。
+
+全程产生455个 selfplay_done 事件、35,000局实际自对弈；去掉重启重复轮为440个
+唯一 iteration、33,920局，约133万局面、87,280次Adam更新。最终快照：
+`runtime/final_iter440.net`(SHA-256
+`66aa74b70cd2a73b1c61616df13aaa4a61073d3c5cdf10c1979084212827b2c4`)，
+停止时 gate best 为 iter435。该停止是用户基于实测收益的人工收口，不冒充原三条件
+自动平台验收通过。
