@@ -14,6 +14,8 @@ hard curriculum 仅用手写三/四连检测重采样自有错题）共完成
 - 完整验收、横评、错误修复、停止理由见 `TRAINING_NOTES.md`
 - GitHub：`https://github.com/chenxuan520/alphazero-gomoku`
 - 全部模型：GitHub Release `v1.0.0`（模型不进入 git 历史）
+- 独立低模拟次数实验见 `FAST_POLICY_DISTILLATION.md`；未通过 48/96/600
+  双预算门禁前不会替换 v1.0.0 或线上 iter330。
 
 复现验收：
 ```bash

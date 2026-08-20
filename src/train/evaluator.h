@@ -4,6 +4,7 @@
 #include "game/gomoku.h"
 
 #include <array>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -62,8 +63,8 @@ public:
   std::size_t Size() const;
 
   // stats for logs
-  std::size_t Lookups() const { return lookups_; }
-  std::size_t Hits() const { return hits_; }
+  std::size_t Lookups() const { return lookups_.load(); }
+  std::size_t Hits() const { return hits_.load(); }
 
 private:
   static constexpr int kShardNum = 64;
@@ -71,8 +72,8 @@ private:
 
   mutable std::mutex mutex_[kShardNum];
   std::unordered_map<std::string, Entry> shards_[kShardNum];
-  std::size_t lookups_ = 0;
-  std::size_t hits_ = 0;
+  std::atomic<std::size_t> lookups_{0};
+  std::atomic<std::size_t> hits_{0};
 };
 
 // Decorator adding cache behavior on top of another evaluator.

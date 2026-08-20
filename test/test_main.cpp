@@ -4,11 +4,18 @@
 #include "mcts/mcts.h"
 #include "train/evaluator.h"
 #include "train/replay_buffer.h"
+#include "train/self_play.h"
+#include "train/trainer.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <random>
+#include <limits>
 #include <string>
+#include <thread>
+#include <sys/stat.h>
+#include <unistd.h>
 
 static int g_checks = 0;
 static int g_failures = 0;
@@ -569,6 +576,149 @@ void TestReplayLoadFailurePreservesBuffer() {
   std::remove(path);
 }
 
+deeplearning::PolicyValueResNet::Config TinyNetConfig(int seed) {
+  deeplearning::PolicyValueResNet::Config config;
+  config.input_channels_ = Gomoku::kPlaneNum;
+  config.board_height_ = Gomoku::kBoardSize;
+  config.board_width_ = Gomoku::kBoardSize;
+  config.trunk_channels_ = 4;
+  config.residual_block_num_ = 1;
+  config.policy_channels_ = 2;
+  config.policy_size_ = Gomoku::kActionNum;
+  config.value_channels_ = 1;
+  config.value_hidden_dim_ = 8;
+  config.thread_num_ = 1;
+  config.rand_seed_ = seed;
+  return config;
+}
+
+void TestTeacherTargetsDoNotControlBehavior() {
+  deeplearning::PolicyValueResNet student, teacher;
+  CHECK(student.Init(TinyNetConfig(11)) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(teacher.Init(TinyNetConfig(97)) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+
+  az::SelfPlayConfig baseline;
+  baseline.worker_num_ = 1;
+  baseline.game_num_ = 1;
+  baseline.max_moves_ = 6;
+  baseline.temperature_move_cutoff_ = 6;
+  baseline.seed_ = 123;
+  baseline.use_cache_ = false;
+  baseline.mcts_.simulation_num_ = 2;
+  baseline.mcts_.dirichlet_epsilon_ = 0.0f;
+
+  az::ReplayBuffer behavior_buffer(16), teacher_buffer(16);
+  const az::SelfPlayStats behavior_stats =
+      az::RunSelfPlay(student, baseline, behavior_buffer);
+
+  az::SelfPlayConfig distilled = baseline;
+  distilled.teacher_target_prob_ = 1.0f;
+  distilled.teacher_simulations_ = 3;
+  const az::SelfPlayStats teacher_stats =
+      az::RunSelfPlay(student, distilled, teacher_buffer, &teacher);
+
+  CHECK(behavior_buffer.Size() == teacher_buffer.Size());
+  CHECK(teacher_stats.teacher_policy_targets == teacher_buffer.Size());
+  CHECK(teacher_stats.student_policy_targets == 0);
+  CHECK(behavior_stats.teacher_policy_targets == 0);
+  CHECK(behavior_stats.student_policy_targets == behavior_buffer.Size());
+  bool policy_differs = false;
+  for (std::size_t i = 0; i < behavior_buffer.Size(); ++i) {
+    const az::Sample &left = behavior_buffer.At(static_cast<int>(i));
+    const az::Sample &right = teacher_buffer.At(static_cast<int>(i));
+    CHECK(left.planes == right.planes); // behavior trajectory is unchanged
+    CHECK(std::fabs(left.value - right.value) < 1e-6f);
+    for (int action = 0; action < Gomoku::kActionNum; ++action) {
+      if (std::fabs(left.policy[action] - right.policy[action]) > 1e-6f)
+        policy_differs = true;
+    }
+  }
+  CHECK(policy_differs);
+}
+
+void TestEvalCacheCountersAreThreadSafe() {
+  az::EvalCache cache;
+  std::array<float, Gomoku::kActionNum> policy{};
+  policy[112] = 1.0f;
+  const int worker_num = 8, lookup_per_worker = 1000;
+  std::vector<Gomoku> games;
+  std::vector<std::size_t> shards;
+  for (int action = 0;
+       action < Gomoku::kActionNum && games.size() < worker_num; ++action) {
+    Gomoku game;
+    CHECK(game.Apply(action));
+    std::string key(Gomoku::kCellNum + 2, '\0');
+    key[0] = static_cast<char>(game.current_player());
+    key[1] = static_cast<char>(game.last_action() + 1);
+    for (int cell = 0; cell < Gomoku::kCellNum; ++cell) {
+      key[cell + 2] = game.board()[cell] == 0
+          ? '\0'
+          : static_cast<char>(game.board()[cell] == game.current_player()
+                                  ? 1 : 2);
+    }
+    const std::size_t shard = std::hash<std::string>{}(key) % 64;
+    if (std::find(shards.begin(), shards.end(), shard) != shards.end())
+      continue;
+    shards.push_back(shard);
+    games.push_back(game);
+    cache.Store(games.back(), policy.data(), 0.25f);
+  }
+  CHECK(games.size() == worker_num);
+  std::atomic<int> failures{0};
+  std::vector<std::thread> workers;
+  for (int worker = 0; worker < worker_num; ++worker) {
+    workers.emplace_back([&, worker]() {
+      for (int i = 0; i < lookup_per_worker; ++i) {
+        az::EvalCache::Entry entry;
+        if (!cache.Lookup(games[worker], entry)) failures.fetch_add(1);
+      }
+    });
+  }
+  for (auto &worker : workers) worker.join();
+  CHECK(failures.load() == 0);
+  CHECK(cache.Lookups() ==
+        static_cast<std::size_t>(worker_num * lookup_per_worker));
+  CHECK(cache.Hits() == cache.Lookups());
+}
+
+void TestFastTrainerRejectsInvalidConfigAndMismatchedBest() {
+  az::TrainConfig invalid;
+  invalid.hard_fraction_ = std::numeric_limits<float>::quiet_NaN();
+  az::Trainer invalid_trainer;
+  CHECK(!invalid_trainer.Init(invalid));
+
+  const char *dir = "/tmp/az_fast_bad_best";
+  mkdir(dir, 0755);
+  const std::string student_path = std::string(dir) + "/student.net";
+  const std::string best_path = std::string(dir) + "/best.net";
+  deeplearning::PolicyValueResNet student, mismatched_best;
+  CHECK(student.Init(TinyNetConfig(3)) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  auto mismatched = TinyNetConfig(4);
+  mismatched.trunk_channels_ = 8;
+  CHECK(mismatched_best.Init(mismatched) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(student.Save(student_path) == deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(mismatched_best.Save(best_path) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+
+  az::TrainConfig config;
+  config.net_ = TinyNetConfig(3);
+  config.run_dir_ = dir;
+  config.resume_ = false;
+  config.buffer_capacity_ = 2;
+  config.init_model_ = student_path;
+  config.init_best_model_ = best_path;
+  az::Trainer trainer;
+  CHECK(!trainer.Init(config));
+
+  std::remove(student_path.c_str());
+  std::remove(best_path.c_str());
+  rmdir(dir);
+}
+
 } // namespace
 
 int main() {
@@ -588,6 +738,9 @@ int main() {
   TestDirichletNoiseWeight();
   TestReplaySaveReportsWriteFailure();
   TestReplayLoadFailurePreservesBuffer();
+  TestTeacherTargetsDoNotControlBehavior();
+  TestEvalCacheCountersAreThreadSafe();
+  TestFastTrainerRejectsInvalidConfigAndMismatchedBest();
 
   std::printf("%d checks, %d failed\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

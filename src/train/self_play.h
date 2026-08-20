@@ -25,6 +25,10 @@ struct SelfPlayConfig {
   // threat), instead of an empty board. Data is still 100% self-played.
   float seed_from_hard_prob_ = 0.0f;
   const std::vector<int> *hard_seed_indices_ = nullptr; // buffer indices
+  // Optional frozen teacher. Behavior follows mcts_; selected positions
+  // replace only their policy target with a deeper, noise-free search.
+  float teacher_target_prob_ = 0.0f;
+  int teacher_simulations_ = 600;
 };
 
 struct SelfPlayStats {
@@ -36,13 +40,16 @@ struct SelfPlayStats {
   double moves_total = 0.0;
   double eval_cache_size = 0;
   double eval_cache_hit_rate = 0.0;
+  std::size_t student_policy_targets = 0;
+  std::size_t teacher_policy_targets = 0;
 };
 
 // Runs game_num self-play games with the given master net, adding all
 // positions to the buffer. Returns aggregate stats.
 SelfPlayStats RunSelfPlay(deeplearning::PolicyValueResNet &master,
                           const SelfPlayConfig &config,
-                          ReplayBuffer &buffer);
+                          ReplayBuffer &buffer,
+                          deeplearning::PolicyValueResNet *teacher = nullptr);
 
 // Plays one full game between two evaluators starting from a fresh board.
 // `black_first_evaluator` plays black. Legacy/default matches force exploration

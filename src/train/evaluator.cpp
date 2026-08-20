@@ -144,8 +144,8 @@ void EvalCache::Clear() {
     std::lock_guard<std::mutex> lock(mutex_[shard]);
     shards_[shard].clear();
   }
-  lookups_ = 0;
-  hits_ = 0;
+  lookups_.store(0);
+  hits_.store(0);
 }
 
 std::size_t EvalCache::Size() const {

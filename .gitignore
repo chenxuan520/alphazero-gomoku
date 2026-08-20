@@ -2,6 +2,7 @@ build/
 bin/
 .venv-analysis/
 runtime/
+runtime_fast/
 runtime_v2/
 runtime.out
 runtime_v2.out

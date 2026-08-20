@@ -5,6 +5,7 @@
 #include "train/replay_buffer.h"
 #include "train/self_play.h"
 
+#include <memory>
 #include <random>
 #include <string>
 
@@ -21,7 +22,12 @@ struct TrainConfig {
   float learning_rate_ = 1e-3f;
   float weight_decay_ = 1e-4f;
   float value_weight_ = 1.0f;   // value head loss weight (policy fixed at 1)
+  float hard_fraction_ = 0.3f;
   std::size_t buffer_capacity_ = 200000;
+
+  std::string init_model_;
+  std::string init_best_model_;
+  std::string teacher_model_;
 
   int gate_every_ = 5;               // every N iterations
   int gate_games_ = 20;
@@ -61,6 +67,7 @@ private:
   deeplearning::PolicyValueResNet net_;
   deeplearning::PolicyValueLoss loss_;
   deeplearning::FloatAdamW optimizer_;
+  std::unique_ptr<deeplearning::PolicyValueResNet> teacher_net_;
   ReplayBuffer buffer_;
   std::mt19937 rng_;
   int iteration_ = 0;

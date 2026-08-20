@@ -65,7 +65,11 @@ void PrintUsage() {
       "  --run-dir DIR (runtime)  --iterations N (-1 forever)  --seed N\n"
       "  --workers N (20)  --games-per-iter N (40)  --sims N (100)\n"
       "  --train-steps N (150)  --batch N (256)\n"
-      "  --lr X (1e-3)  --wd X (1e-4)  --buffer N (200000)\n"
+      "  --lr X (1e-3)  --wd X (1e-4)  --value-weight X\n"
+      "  --hard-fraction X (.3)  --buffer N (200000)\n"
+      "  --resume 0|1  --cache 0|1\n"
+      "  --init-model FILE  --init-best-model FILE\n"
+      "  --teacher-model FILE  --teacher-sims N  --teacher-target-prob X\n"
       "  --max-moves N (200)  --temp-moves N (12)\n"
       "  --cpuct X (1.5)  --dir-eps X (0.25)  --dir-alpha X (0.3)\n"
       "  --reuse-tree 0|1 (0)\n"
@@ -468,7 +472,15 @@ int CmdTrain(int argc, char **argv) {
     else if (!std::strcmp(key, "--lr")) config.learning_rate_ = std::atof(value);
     else if (!std::strcmp(key, "--wd")) config.weight_decay_ = std::atof(value);
     else if (!std::strcmp(key, "--value-weight")) config.value_weight_ = std::atof(value);
+    else if (!std::strcmp(key, "--hard-fraction")) config.hard_fraction_ = std::atof(value);
     else if (!std::strcmp(key, "--buffer")) config.buffer_capacity_ = std::stoul(value);
+    else if (!std::strcmp(key, "--resume")) config.resume_ = std::atoi(value) != 0;
+    else if (!std::strcmp(key, "--cache")) config.selfplay_.use_cache_ = std::atoi(value) != 0;
+    else if (!std::strcmp(key, "--init-model")) config.init_model_ = value;
+    else if (!std::strcmp(key, "--init-best-model")) config.init_best_model_ = value;
+    else if (!std::strcmp(key, "--teacher-model")) config.teacher_model_ = value;
+    else if (!std::strcmp(key, "--teacher-sims")) config.selfplay_.teacher_simulations_ = std::atoi(value);
+    else if (!std::strcmp(key, "--teacher-target-prob")) config.selfplay_.teacher_target_prob_ = std::atof(value);
     else if (!std::strcmp(key, "--max-moves")) config.selfplay_.max_moves_ = std::atoi(value);
     else if (!std::strcmp(key, "--temp-moves")) config.selfplay_.temperature_move_cutoff_ = std::atoi(value);
     else if (!std::strcmp(key, "--seed-hard-prob")) config.selfplay_.seed_from_hard_prob_ = std::atof(value);

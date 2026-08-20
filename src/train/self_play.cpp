@@ -43,13 +43,24 @@ bool GameFromSample(const Sample &sample, Gomoku &game) {
 // Plays a single self-play game; appends samples (with final z values) to the
 // buffer. Returns the move count.
 int PlaySelfPlayGame(Evaluator &evaluator, EvalCache *cache,
-                     const SelfPlayConfig &config, ReplayBuffer &buffer,
-                     const ReplayBuffer *seed_source, std::mt19937 &rng) {
+                      Evaluator *teacher_evaluator, EvalCache *teacher_cache,
+                      const SelfPlayConfig &config, ReplayBuffer &buffer,
+                      const ReplayBuffer *seed_source, std::mt19937 &rng,
+                      std::mt19937 &teacher_rng, int &teacher_target_count,
+                      int &sample_count) {
   Mcts mcts;
   CachedEvaluator cached(&evaluator, cache);
   INetEvaluator *used = cache != nullptr
                             ? static_cast<INetEvaluator *>(&cached)
                             : static_cast<INetEvaluator *>(&evaluator);
+  CachedEvaluator cached_teacher(teacher_evaluator, teacher_cache);
+  INetEvaluator *teacher_used = teacher_evaluator == nullptr
+      ? nullptr
+      : (teacher_cache != nullptr
+             ? static_cast<INetEvaluator *>(&cached_teacher)
+             : static_cast<INetEvaluator *>(teacher_evaluator));
+  std::unique_ptr<Mcts> teacher_mcts;
+  if (teacher_used != nullptr) teacher_mcts.reset(new Mcts());
 
   Gomoku game;
   // Curriculum seeding: optionally start from a hard defensive position.
@@ -72,26 +83,45 @@ int PlaySelfPlayGame(Evaluator &evaluator, EvalCache *cache,
   std::vector<Sample> history;
   std::vector<int> history_player;
   std::vector<int> visit_action, visit_count;
+  std::vector<int> teacher_action, teacher_count;
+  std::array<float, Gomoku::kActionNum> behavior_policy;
+  std::uniform_real_distribution<float> teacher_roll(0.0f, 1.0f);
   Sample sample;
 
   while (!game.IsTerminal() && game.move_count() < config.max_moves_) {
     mcts.Search(game, config.mcts_, *used, rng, visit_action, visit_count);
 
-    Mcts::VisitDistribution(visit_action, visit_count, sample.policy.data());
+    Mcts::VisitDistribution(visit_action, visit_count, behavior_policy.data());
     game.EncodeInto(sample.planes.data());
+    const bool use_teacher = teacher_used != nullptr &&
+        config.teacher_target_prob_ > 0.0f &&
+        teacher_roll(teacher_rng) < config.teacher_target_prob_;
+    if (use_teacher) {
+      MctsConfig teacher_config = config.mcts_;
+      teacher_config.simulation_num_ = config.teacher_simulations_;
+      teacher_config.dirichlet_epsilon_ = 0.0f;
+      teacher_config.reuse_tree_ = false;
+      teacher_mcts->Search(game, teacher_config, *teacher_used, teacher_rng,
+                           teacher_action, teacher_count);
+      Mcts::VisitDistribution(teacher_action, teacher_count,
+                              sample.policy.data());
+      ++teacher_target_count;
+    } else {
+      sample.policy = behavior_policy;
+    }
     history.push_back(sample);
     history_player.push_back(game.current_player());
 
     // pick the action: sample during the opening, argmax later
     int action = -1;
     if (game.move_count() < config.temperature_move_cutoff_) {
-      std::discrete_distribution<int> dist(sample.policy.begin(),
-                                           sample.policy.end());
+      std::discrete_distribution<int> dist(behavior_policy.begin(),
+                                           behavior_policy.end());
       action = dist(rng);
     } else {
       action = static_cast<int>(
-          std::max_element(sample.policy.begin(), sample.policy.end()) -
-          sample.policy.begin());
+          std::max_element(behavior_policy.begin(), behavior_policy.end()) -
+          behavior_policy.begin());
     }
     // dirichlet noise can spread counts onto anything legal; guard anyway
     if (action < 0 || !game.IsLegal(action)) {
@@ -113,6 +143,7 @@ int PlaySelfPlayGame(Evaluator &evaluator, EvalCache *cache,
         winner == 0 ? 0.0f : (history_player[i] == winner ? 1.0f : -1.0f);
     buffer.Push(history[i]);
   }
+  sample_count = static_cast<int>(history.size());
   return game.move_count();
 }
 
@@ -120,9 +151,13 @@ int PlaySelfPlayGame(Evaluator &evaluator, EvalCache *cache,
 
 SelfPlayStats RunSelfPlay(deeplearning::PolicyValueResNet &master,
                           const SelfPlayConfig &config,
-                          ReplayBuffer &buffer) {
+                          ReplayBuffer &buffer,
+                          deeplearning::PolicyValueResNet *teacher) {
   EvalCache cache;
   EvalCache *cache_ptr = config.use_cache_ ? &cache : nullptr;
+  EvalCache teacher_cache;
+  EvalCache *teacher_cache_ptr =
+      config.use_cache_ && teacher != nullptr ? &teacher_cache : nullptr;
 
   std::atomic<int> next_game{0};
   std::atomic<int> finished{0};
@@ -131,6 +166,7 @@ SelfPlayStats RunSelfPlay(deeplearning::PolicyValueResNet &master,
 
   auto worker = [&](int worker_index) {
     Evaluator evaluator;
+    Evaluator teacher_evaluator;
     deeplearning::PolicyValueResNet::Config net_config = master.config();
     net_config.thread_num_ = 1; // workers never share the global pool
     if (!evaluator.Init(net_config)) {
@@ -143,19 +179,41 @@ SelfPlayStats RunSelfPlay(deeplearning::PolicyValueResNet &master,
                    worker_index);
       return;
     }
+    Evaluator *teacher_ptr = nullptr;
+    if (teacher != nullptr) {
+      auto teacher_config = teacher->config();
+      teacher_config.thread_num_ = 1;
+      if (!teacher_evaluator.Init(teacher_config) ||
+          !AssignWeights(teacher_evaluator.net(), *teacher)) {
+        std::fprintf(stderr, "[selfplay] worker %d teacher init failed\n",
+                     worker_index);
+        return;
+      }
+      teacher_ptr = &teacher_evaluator;
+    }
     std::mt19937 rng(
         static_cast<unsigned>(config.seed_ * 1000003u + worker_index));
+    std::mt19937 teacher_rng(static_cast<unsigned>(
+        config.seed_ * 2000003u + worker_index + 0x5a17u));
     while (true) {
       const int game_index = next_game.fetch_add(1);
       if (game_index >= config.game_num_) {
         break;
       }
-      const int moves =
-          PlaySelfPlayGame(evaluator, cache_ptr, config, buffer, &buffer,
-                           rng);
+      int teacher_targets = 0;
+      int generated_samples = 0;
+      const int moves = PlaySelfPlayGame(
+          evaluator, cache_ptr, teacher_ptr, teacher_cache_ptr, config,
+          buffer, &buffer, rng, teacher_rng, teacher_targets,
+          generated_samples);
       std::lock_guard<std::mutex> lock(stats_mutex);
       ++stats.games;
       stats.moves_total += moves;
+      stats.samples += static_cast<std::size_t>(generated_samples);
+      stats.teacher_policy_targets +=
+          static_cast<std::size_t>(teacher_targets);
+      stats.student_policy_targets +=
+          static_cast<std::size_t>(generated_samples - teacher_targets);
       const int done = finished.fetch_add(1) + 1;
       if (done % 5 == 0 || done == config.game_num_) {
         std::fprintf(stderr, "\r[selfplay] games %d/%d", done,
@@ -172,7 +230,6 @@ SelfPlayStats RunSelfPlay(deeplearning::PolicyValueResNet &master,
   for (auto &t : threads) t.join();
   std::fprintf(stderr, "\n");
 
-  stats.samples = stats.games > 0 ? static_cast<std::size_t>(stats.moves_total) : 0;
   if (cache_ptr != nullptr) {
     stats.eval_cache_size = static_cast<double>(cache.Size());
     stats.eval_cache_hit_rate =
