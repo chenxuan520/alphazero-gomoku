@@ -153,6 +153,9 @@ Replay Buffer（约 860MiB）与 optimizer state 不是模型权重，不上传 
   100%，并在600 sims下分别40:0击败冻结 iter440 与晋升快照iter360。
   完整方案与门禁见
   [`FAST_POLICY_DISTILLATION.md`](FAST_POLICY_DISTILLATION.md)。
+- **生产选模**：8模型、1400局、48-sim全循环中iter440以210:140/60%排名
+  第一，fast iter4以198:152/56.6%第三；因此`stable/deep`用iter440，
+  `fast`通道保留蒸馏版，避免把外部对手专项优势误当成全代际优势。
 - **崩溃安全 checkpoint**：latest/best/replay 三者准备并 fsync 后，只通过一次
   `latest.current` rename 提交；平台 monitor 用 nonce 让 trainer 在完整轮边界暂停，
   不再外部 kill。

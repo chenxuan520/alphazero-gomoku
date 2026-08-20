@@ -4,6 +4,26 @@
 
 ## 2026-08-20 低 simulations policy 蒸馏收官
 
+### 48-sim 生产选型:8模型全循环
+
+- 参赛:fast iter4、iter330/335/360/405/415/435六个真实晋升快照、最终iter440。
+- 协议:28组配对×50局=1400局；双方各执黑25；48 sims；有界子树复用；
+  root noise=0；前6手按访问分布采样，之后贪心；逐局固定seed。
+- Bradley–Terry/总积分排序:
+  1. iter440 210:140=60.0%(Elo基准+63)
+  2. iter435 204:146=58.3%
+  3. fast iter4 198:152=56.6%
+  4. iter415 196:154=56.0%
+  5. iter405 183:167=52.3%
+  6. iter360 157:193=44.9%
+  7. iter330 128:222=36.6%
+  8. iter335 124:226=35.4%
+- iter440 对 fast 直接31:19；综合内战第一且与用户试玩体感一致，因此生产
+  `stable`/`deep` 选择iter440；蒸馏模型保留在`fast`通道。电子书和game-old
+  永远只读固定stable URL，后续晋升无需改客户端仓库。
+- 原始manifest、28组日志和结构化结果保存在
+  `runtime_fast/round_robin_48_prod/`。
+
 - 独立分支 `fast-policy-distillation`，冻结 iter440 作为 student bootstrap、
   best baseline 与600-sim teacher；student 行为预算96，70%局面用 teacher
   visit policy 替换训练 policy target，真实动作始终来自 student，z 仍来自
