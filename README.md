@@ -150,7 +150,8 @@ Replay Buffer（约 860MiB）与 optimizer state 不是模型权重，不上传 
   有硬预算，触顶丢树 fresh 重建。批准版 L6@48 耗时 187s→122s。
 - **低预算 policy 蒸馏**：v1.1.0 fast 模型只更新 policy head，冻结 iter440
   trunk/value/BN；L6@48(reuse) 总胜率72%，L6@96为86%，L7@48/96均
-  100%，并在600 sims下40:0击败冻结 iter440。完整方案与门禁见
+  100%，并在600 sims下分别40:0击败冻结 iter440 与晋升快照iter360。
+  完整方案与门禁见
   [`FAST_POLICY_DISTILLATION.md`](FAST_POLICY_DISTILLATION.md)。
 - **崩溃安全 checkpoint**：latest/best/replay 三者准备并 fsync 后，只通过一次
   `latest.current` rename 提交；平台 monitor 用 nonce 让 trainer 在完整轮边界暂停，

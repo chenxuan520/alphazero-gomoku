@@ -78,9 +78,11 @@ is frozen as `runtime_fast/champion_fast_iter4.net`:
 - L6/L7 at 96 fresh-tree sims: L6 96%/76%, L7 100%/100%; iter330 scored
   84%/28% and 100%/0%, iter440 scored 92%/68% and 100%/100%;
 - direct 600-sim arena versus iter440: 40:0, winning both colors;
+- direct 600-sim arena versus promoted iter360: 40:0, winning 20/20 as
+  black and 20/20 as white;
 - 600-sim L6/L7 confirmation, 25 games/color: L6 100%/96%, L7 100%/100%;
   the maximum color-specific regression versus iter440 was 4 percentage
-  points, within the pre-registered 5-point guard.
+points, within the pre-registered 5-point guard.
 
 The accepted model improves the browser-oriented low-simulation path without
 reducing the value/trunk representation used by high-budget search. Frozen
