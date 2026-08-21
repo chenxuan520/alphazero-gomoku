@@ -1,27 +1,37 @@
-# AlphaZero Gomoku v2 breakthrough
+# AlphaZero Gomoku iter440-evolved-64x8
 
 ## Goal
 
-Produce a v2 model that clearly exceeds frozen iter440 while preserving v1.x
-artifacts. Use CPUs 0-55, up to 200GB RAM, and an isolated `runtime_v2/`.
+Expand frozen iter440 from 32x4 to 64x8 without changing its initial function,
+then continue the pure AlphaZero self-play loop (behavior, policy targets and
+value targets all come from the current 64x8 network's own MCTS and games) until
+the evolved model clearly exceeds iter440. No frozen teacher model or teacher
+targets. Preserve all existing stable artifacts. Use CPUs 0-55, up to 200GB
+RAM, and an isolated experimental runtime.
 
 ## Acceptance
 
-- v2 beats iter440 materially at 48 and 96 simulations under paired,
+- iter440-evolved-64x8 beats iter440 materially at 48 and 96 simulations under paired,
   color-balanced, deterministic-seed evaluation.
 - v2 is non-inferior at 600 simulations and clears L6/L7 both colors.
-- No v1.x stable channel or model is changed before all gates pass.
+- No stable channel or frozen iter440 model is changed before all gates pass.
 
 ## Implementation stages
 
 1. Benchmark cross-game dynamic batching without changing historical defaults.
 2. Add exact-preserving 32x4 -> 64x8 Net2Net expansion.
 3. Review concurrency, shutdown, checkpoint bootstrap and learnability tests.
-4. Run isolated v2 pilots; monitor throughput, losses, gates and resources.
+4. Run isolated evolved-model pilots; monitor throughput, losses, gates and resources.
 5. Add same-tree virtual-loss batching only if Phase A/kernel results justify it.
-6. Evaluate 48/96/600 and publish only after acceptance.
+6. Evaluate 48/96/600 and publish as v1.2.0 only after acceptance.
 
 ## Current result
+
+- Two teacher-target pilots were rejected after user review: they are expert
+  distillation rather than the requested pure current-network AlphaZero loop.
+  The active route is now: exact iter440->64x8 expansion, fresh optimizer,
+  import iter440's 200k pure self-play replay, then generate every new policy
+  target with the 64x8 network's own 600-simulation MCTS. No teacher network.
 
 - Dynamic batch inference is opt-in. It is numerically equivalent and tested,
   but on the current scalar CPU kernels it is slower than 48 worker-local nets
