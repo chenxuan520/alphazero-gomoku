@@ -5,9 +5,14 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -43,6 +48,68 @@ private:
   deeplearning::PolicyValueResNet net_;
   deeplearning::FloatTensor4D input_;
   deeplearning::PolicyValueResNet::Output output_;
+};
+
+// One-owner dynamic batching service. Callers keep the synchronous evaluator
+// API, but cache misses are queued and packed into one network forward. The
+// network is touched only by worker_, because PolicyValueResNet inference is
+// not safe for concurrent direct calls.
+class DynamicBatchEvaluator : public INetEvaluator {
+public:
+  struct Config {
+    int max_batch_size_ = 32;
+    int max_wait_us_ = 200;
+    int inference_thread_num_ = 1;
+  };
+
+  struct Stats {
+    std::uint64_t requests_ = 0;
+    std::uint64_t forward_calls_ = 0;
+    std::uint64_t total_batch_size_ = 0;
+    std::uint64_t total_queue_wait_us_ = 0;
+    int max_batch_size_ = 0;
+  };
+
+  DynamicBatchEvaluator() = default;
+  ~DynamicBatchEvaluator() override { Stop(); }
+  DynamicBatchEvaluator(const DynamicBatchEvaluator &) = delete;
+  DynamicBatchEvaluator &operator=(const DynamicBatchEvaluator &) = delete;
+
+  bool Init(deeplearning::PolicyValueResNet &master, const Config &config);
+  void Predict(const Gomoku &game, float *policy, float &value) override;
+  void Stop();
+  Stats GetStats() const;
+
+private:
+  struct Request {
+    Gomoku game_;
+    std::array<float, Gomoku::kActionNum> policy_{};
+    float value_ = 0.0f;
+    bool done_ = false;
+    std::chrono::steady_clock::time_point enqueue_time_;
+    std::mutex mutex_;
+    std::condition_variable condition_;
+  };
+
+  void Run();
+  void EvaluateBatch(const std::vector<std::shared_ptr<Request>> &batch);
+  static void SetFallback(Request &request);
+
+  Config config_;
+  deeplearning::PolicyValueResNet net_;
+  deeplearning::FloatTensor4D input_;
+  deeplearning::PolicyValueResNet::Output output_;
+  std::thread worker_;
+  mutable std::mutex queue_mutex_;
+  std::condition_variable queue_condition_;
+  std::deque<std::shared_ptr<Request>> queue_;
+  bool started_ = false;
+  bool stopping_ = false;
+  std::atomic<std::uint64_t> requests_{0};
+  std::atomic<std::uint64_t> forward_calls_{0};
+  std::atomic<std::uint64_t> total_batch_size_{0};
+  std::atomic<std::uint64_t> total_queue_wait_us_{0};
+  std::atomic<int> max_batch_size_{0};
 };
 
 // Thread-safe evaluation cache: exact board-position key (this player's /

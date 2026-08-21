@@ -19,6 +19,7 @@ struct TrainConfig {
   int iterations_ = -1;              // -1 = run forever
   int train_steps_ = 150;            // optimizer steps per iteration
   int batch_size_ = 256;
+  int train_thread_num_ = 4;
   float learning_rate_ = 1e-3f;
   float weight_decay_ = 1e-4f;
   float value_weight_ = 1.0f;   // value head loss weight (policy fixed at 1)
@@ -29,6 +30,7 @@ struct TrainConfig {
   std::string init_model_;
   std::string init_best_model_;
   std::string teacher_model_;
+  bool expand_init_model_ = false;
 
   int gate_every_ = 5;               // every N iterations
   int gate_games_ = 20;

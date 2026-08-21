@@ -90,13 +90,20 @@ std::vector<GauntletResult> RunGauntlet(
   std::vector<int> outcomes(jobs.size(), 0);
   std::atomic<int> next_job{0};
   std::atomic<int> finished{0};
+  std::vector<std::unique_ptr<Evaluator>> evaluators(workers);
+  auto net_config = net.config();
+  net_config.thread_num_ = 1;
+  for (int worker = 0; worker < workers; ++worker) {
+    evaluators[worker].reset(new Evaluator());
+    if (!evaluators[worker]->Init(net_config) ||
+        !AssignWeights(evaluators[worker]->net(), net)) {
+      std::fprintf(stderr, "[gauntlet] evaluator snapshot failed\n");
+      return results;
+    }
+  }
 
   auto worker = [&](int worker_index) {
-    Evaluator evaluator;
-    auto config = net.config();
-    config.thread_num_ = 1;
-    evaluator.Init(config);
-    AssignWeights(evaluator.net(), net);
+    Evaluator &evaluator = *evaluators[worker_index];
     while (true) {
       const int job_index = next_job.fetch_add(1);
       if (job_index >= static_cast<int>(jobs.size())) {

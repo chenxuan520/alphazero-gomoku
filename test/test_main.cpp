@@ -3,11 +3,13 @@
 #include "game/gomoku.h"
 #include "mcts/mcts.h"
 #include "train/evaluator.h"
+#include "train/model_expand.h"
 #include "train/replay_buffer.h"
 #include "train/self_play.h"
 #include "train/trainer.h"
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -684,11 +686,373 @@ void TestEvalCacheCountersAreThreadSafe() {
   CHECK(cache.Hits() == cache.Lookups());
 }
 
+void TestDynamicBatchEvaluatorMatchesSingleEvaluation() {
+  deeplearning::PolicyValueResNet master;
+  CHECK(master.Init(TinyNetConfig(211)) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+
+  az::Evaluator reference;
+  CHECK(reference.Init(TinyNetConfig(211)));
+  CHECK(az::AssignWeights(reference.net(), master));
+
+  az::DynamicBatchEvaluator service;
+  az::DynamicBatchEvaluator::Config config;
+  config.max_batch_size_ = 8;
+  config.max_wait_us_ = 20000;
+  config.inference_thread_num_ = 1;
+  CHECK(service.Init(master, config));
+
+  const int request_num = 8;
+  std::vector<Gomoku> games(request_num);
+  for (int index = 0; index < request_num; ++index) {
+    CHECK(games[index].Apply(A(7, 7)));
+    CHECK(games[index].Apply(A(index / 4, index % 4)));
+  }
+  std::vector<std::array<float, Gomoku::kActionNum>> batched(request_num);
+  std::vector<float> batched_values(request_num, 0.0f);
+  std::atomic<int> ready{0};
+  std::atomic<bool> go{false};
+  std::vector<std::thread> workers;
+  for (int index = 0; index < request_num; ++index) {
+    workers.emplace_back([&, index]() {
+      ready.fetch_add(1);
+      while (!go.load()) std::this_thread::yield();
+      service.Predict(games[index], batched[index].data(),
+                      batched_values[index]);
+    });
+  }
+  while (ready.load() != request_num) std::this_thread::yield();
+  go.store(true);
+  for (auto &worker : workers) worker.join();
+  service.Stop();
+
+  for (int index = 0; index < request_num; ++index) {
+    std::array<float, Gomoku::kActionNum> expected{};
+    float expected_value = 0.0f;
+    reference.Predict(games[index], expected.data(), expected_value);
+    CHECK(std::fabs(expected_value - batched_values[index]) < 1e-5f);
+    float policy_sum = 0.0f;
+    for (int action = 0; action < Gomoku::kActionNum; ++action) {
+      CHECK(std::fabs(expected[action] - batched[index][action]) < 1e-5f);
+      policy_sum += batched[index][action];
+      if (!games[index].IsLegal(action)) CHECK(batched[index][action] == 0.0f);
+    }
+    CHECK(std::fabs(policy_sum - 1.0f) < 1e-5f);
+  }
+  const auto stats = service.GetStats();
+  CHECK(stats.requests_ == request_num);
+  CHECK(stats.total_batch_size_ == request_num);
+  CHECK(stats.forward_calls_ >= 1);
+  CHECK(stats.forward_calls_ < request_num);
+  CHECK(stats.max_batch_size_ > 1);
+}
+
+void TestDynamicBatchEvaluatorFlushesPartialBatch() {
+  deeplearning::PolicyValueResNet master;
+  CHECK(master.Init(TinyNetConfig(212)) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  az::DynamicBatchEvaluator service;
+  az::DynamicBatchEvaluator::Config config;
+  config.max_batch_size_ = 16;
+  config.max_wait_us_ = 1000;
+  CHECK(service.Init(master, config));
+  Gomoku game;
+  std::array<float, Gomoku::kActionNum> policy{};
+  float value = 0.0f;
+  service.Predict(game, policy.data(), value);
+  service.Stop();
+  const auto stats = service.GetStats();
+  CHECK(stats.requests_ == 1);
+  CHECK(stats.forward_calls_ == 1);
+  CHECK(stats.total_batch_size_ == 1);
+  CHECK(stats.max_batch_size_ == 1);
+}
+
+void TestDynamicBatchEvaluatorDrainsOnStop() {
+  deeplearning::PolicyValueResNet master;
+  CHECK(master.Init(TinyNetConfig(214)) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  az::DynamicBatchEvaluator service;
+  az::DynamicBatchEvaluator::Config config;
+  config.max_batch_size_ = 16;
+  config.max_wait_us_ = 50000;
+  CHECK(service.Init(master, config));
+
+  const int request_num = 8;
+  std::atomic<int> ready{0};
+  std::atomic<bool> go{false};
+  std::atomic<int> completed{0};
+  std::atomic<int> failures{0};
+  std::vector<std::thread> callers;
+  for (int index = 0; index < request_num; ++index) {
+    callers.emplace_back([&, index]() {
+      Gomoku game;
+      if (!game.Apply(A(7, 7))) failures.fetch_add(1);
+      if (index > 0 && !game.Apply(A(0, index - 1))) failures.fetch_add(1);
+      std::array<float, Gomoku::kActionNum> policy{};
+      float value = 0.0f;
+      ready.fetch_add(1);
+      while (!go.load()) std::this_thread::yield();
+      service.Predict(game, policy.data(), value);
+      float sum = 0.0f;
+      for (float probability : policy) sum += probability;
+      if (std::fabs(sum - 1.0f) < 1e-5f) completed.fetch_add(1);
+    });
+  }
+  while (ready.load() != request_num) std::this_thread::yield();
+  go.store(true);
+  std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  service.Stop();
+  for (auto &caller : callers) caller.join();
+  CHECK(failures.load() == 0);
+  CHECK(completed.load() == request_num);
+  CHECK(service.GetStats().requests_ == request_num);
+}
+
+void TestPolicyValueResNetExpansionPreservesInference() {
+  auto source_config = TinyNetConfig(301);
+  deeplearning::PolicyValueResNet source;
+  CHECK(source.Init(source_config) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  auto destination_config = source_config;
+  destination_config.trunk_channels_ = 8;
+  destination_config.residual_block_num_ = 3;
+  destination_config.rand_seed_ = 999;
+  deeplearning::PolicyValueResNet destination;
+  CHECK(destination.Init(destination_config) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(az::ExpandPolicyValueResNet(destination, source));
+  const auto &stem_weight = destination.stem_conv().weight();
+  const int stem_kernel = source_config.input_channels_ * 3 * 3;
+  CHECK(stem_weight[source_config.trunk_channels_ * stem_kernel] != 0.0f);
+  CHECK(stem_weight[source_config.trunk_channels_ * stem_kernel] !=
+        stem_weight[(source_config.trunk_channels_ + 1) * stem_kernel]);
+  CHECK(destination.blocks()[source_config.residual_block_num_]
+            .conv1().weight()[0] != 0.0f);
+
+  deeplearning::FloatTensor4D input(3, Gomoku::kPlaneNum,
+                                    Gomoku::kBoardSize, Gomoku::kBoardSize);
+  Gomoku games[3];
+  CHECK(games[1].Apply(A(7, 7)));
+  CHECK(games[2].Apply(A(7, 7)));
+  CHECK(games[2].Apply(A(7, 8)));
+  for (int index = 0; index < 3; ++index) {
+    games[index].EncodeInto(
+        input.data() + index * Gomoku::kPlaneNum * Gomoku::kCellNum);
+  }
+  deeplearning::PolicyValueResNet::Output source_output, destination_output;
+  CHECK(source.Forward(input, source_output, false) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(destination.Forward(input, destination_output, false) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(source_output.policy_logits_.size() ==
+        destination_output.policy_logits_.size());
+  CHECK(source_output.values_.size() == destination_output.values_.size());
+  for (std::size_t index = 0; index < source_output.policy_logits_.size();
+       ++index) {
+    CHECK(std::fabs(source_output.policy_logits_[index] -
+                    destination_output.policy_logits_[index]) < 2e-5f);
+  }
+  for (std::size_t index = 0; index < source_output.values_.size(); ++index) {
+    CHECK(std::fabs(source_output.values_[index] -
+                    destination_output.values_[index]) < 2e-6f);
+  }
+  // Added blocks keep independent random conv1 features but zero conv2, so
+  // their residual output starts as an exact identity.
+  for (int block = source_config.residual_block_num_;
+       block < destination_config.residual_block_num_; ++block) {
+    for (float value : destination.blocks()[block].conv2().weight())
+      CHECK(value == 0.0f);
+  }
+
+  // Exact-preserving random added features must give both the policy head and
+  // the first new block's second convolution a nonzero first-step gradient.
+  destination.ZeroGrad();
+  CHECK(destination.Forward(input, destination_output, true) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  std::vector<float> grad_policy(3 * Gomoku::kActionNum, 0.0f);
+  std::vector<float> grad_value(3, 0.0f);
+  grad_policy[0] = 1.0f;
+  grad_policy[Gomoku::kActionNum + 1] = -0.5f;
+  grad_policy[2 * Gomoku::kActionNum + 2] = 0.25f;
+  deeplearning::FloatTensor4D grad_input;
+  CHECK(destination.Backward(grad_policy, grad_value, grad_input) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  bool extra_policy_gradient = false;
+  float first_extra_gradient = 0.0f;
+  bool distinct_extra_gradient = false;
+  const auto &policy_grad = destination.policy_conv().grad_weight();
+  for (int output = 0; output < destination_config.policy_channels_; ++output) {
+    for (int input_channel = source_config.trunk_channels_;
+         input_channel < destination_config.trunk_channels_; ++input_channel) {
+      const float gradient = policy_grad[
+          output * destination_config.trunk_channels_ + input_channel];
+      if (std::fabs(gradient) > 1e-12f) {
+        extra_policy_gradient = true;
+      }
+      if (input_channel == source_config.trunk_channels_) {
+        first_extra_gradient = gradient;
+      } else if (std::fabs(gradient - first_extra_gradient) > 1e-12f) {
+        distinct_extra_gradient = true;
+      }
+    }
+  }
+  CHECK(extra_policy_gradient);
+  CHECK(distinct_extra_gradient);
+  bool new_block_gradient = false;
+  for (float value : destination.blocks()[source_config.residual_block_num_]
+                         .conv2().grad_weight()) {
+    if (std::fabs(value) > 1e-10f) new_block_gradient = true;
+  }
+  CHECK(new_block_gradient);
+
+  // Apply one tiny conv2 update, then the second backward pass must reach the
+  // formerly isolated random conv1 features in the added block.
+  auto &new_block = destination.blocks()[source_config.residual_block_num_];
+  auto &conv2_weight = new_block.conv2().mutable_weight();
+  const auto first_grad = new_block.conv2().grad_weight();
+  for (std::size_t index = 0; index < conv2_weight.size(); ++index) {
+    conv2_weight[index] -= 1e-3f * first_grad[index];
+  }
+  destination.ZeroGrad();
+  CHECK(destination.Forward(input, destination_output, true) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(destination.Backward(grad_policy, grad_value, grad_input) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  bool second_step_reaches_conv1 = false;
+  for (float value : new_block.conv1().grad_weight()) {
+    if (std::fabs(value) > 1e-10f) second_step_reaches_conv1 = true;
+  }
+  CHECK(second_step_reaches_conv1);
+}
+
+void TestExpandedTrainerCheckpointResume() {
+  const char *dir = "/tmp/az_expanded_resume";
+  std::system("rm -rf /tmp/az_expanded_resume");
+  CHECK(mkdir(dir, 0755) == 0);
+  const std::string source_path = std::string(dir) + "/source.net";
+  deeplearning::PolicyValueResNet source;
+  CHECK(source.Init(TinyNetConfig(401)) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(source.Save(source_path) == deeplearning::PolicyValueResNet::SUCCESS);
+
+  az::TrainConfig config;
+  config.net_ = TinyNetConfig(999);
+  config.net_.trunk_channels_ = 8;
+  config.net_.residual_block_num_ = 2;
+  config.run_dir_ = dir;
+  config.iterations_ = 1;
+  config.resume_ = false;
+  config.expand_init_model_ = true;
+  config.init_model_ = source_path;
+  config.init_best_model_ = source_path;
+  config.selfplay_.worker_num_ = 1;
+  config.selfplay_.game_num_ = 1;
+  config.selfplay_.mcts_.simulation_num_ = 1;
+  config.selfplay_.mcts_.dirichlet_epsilon_ = 0.0f;
+  config.selfplay_.temperature_move_cutoff_ = 0;
+  config.selfplay_.max_moves_ = 4;
+  config.train_steps_ = 1;
+  config.batch_size_ = 1;
+  config.buffer_capacity_ = 16;
+  config.hard_fraction_ = 0.0f;
+  config.gate_every_ = 100;
+  config.save_buffer_every_ = 1;
+  az::Trainer trainer;
+  CHECK(trainer.Init(config));
+  trainer.Run();
+
+  deeplearning::PolicyValueResNet checkpoint;
+  CHECK(checkpoint.Load(std::string(dir) + "/checkpoint.latest.1.net") ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(checkpoint.config().trunk_channels_ == 8);
+  CHECK(checkpoint.config().residual_block_num_ == 2);
+
+  az::TrainConfig resume = config;
+  resume.iterations_ = 2;
+  resume.resume_ = true;
+  resume.init_model_.clear();
+  resume.init_best_model_.clear();
+  az::Trainer resumed;
+  CHECK(resumed.Init(resume));
+  resumed.Run();
+  CHECK(access((std::string(dir) + "/checkpoint.latest.2.net").c_str(),
+               F_OK) == 0);
+  std::system("rm -rf /tmp/az_expanded_resume");
+}
+
+void TestSelfPlayUsesDynamicBatchEvaluator() {
+  deeplearning::PolicyValueResNet master;
+  CHECK(master.Init(TinyNetConfig(213)) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  az::SelfPlayConfig config;
+  config.worker_num_ = 4;
+  config.game_num_ = 4;
+  config.max_moves_ = 4;
+  config.temperature_move_cutoff_ = 0;
+  config.use_cache_ = false;
+  config.mcts_.simulation_num_ = 1;
+  config.mcts_.dirichlet_epsilon_ = 0.0f;
+  config.use_batch_inference_ = true;
+  config.inference_batch_size_ = 4;
+  config.inference_wait_us_ = 20000;
+  config.inference_thread_num_ = 1;
+  az::ReplayBuffer buffer(64);
+  const az::SelfPlayStats stats = az::RunSelfPlay(master, config, buffer);
+  CHECK(stats.games == 4);
+  CHECK(stats.samples == buffer.Size());
+  CHECK(stats.samples == 16);
+  CHECK(stats.inference_forward_calls > 0);
+  CHECK(stats.inference_average_batch > 1.0);
+  CHECK(stats.inference_max_batch > 1);
+}
+
+void TestExpandedStudentSupportsSmallerTeacher() {
+  deeplearning::PolicyValueResNet teacher, student;
+  const auto teacher_config = TinyNetConfig(215);
+  CHECK(teacher.Init(teacher_config) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  auto student_config = teacher_config;
+  student_config.trunk_channels_ = 8;
+  student_config.residual_block_num_ = 2;
+  CHECK(student.Init(student_config) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(az::ExpandPolicyValueResNet(student, teacher));
+
+  for (int batched = 0; batched <= 1; ++batched) {
+    az::SelfPlayConfig config;
+    config.worker_num_ = 2;
+    config.game_num_ = 2;
+    config.max_moves_ = 2;
+    config.temperature_move_cutoff_ = 0;
+    config.use_cache_ = false;
+    config.mcts_.simulation_num_ = 1;
+    config.mcts_.dirichlet_epsilon_ = 0.0f;
+    config.teacher_target_prob_ = 1.0f;
+    config.teacher_simulations_ = 1;
+    config.use_batch_inference_ = batched != 0;
+    config.inference_batch_size_ = 2;
+    config.inference_wait_us_ = 10000;
+    config.inference_thread_num_ = 1;
+    az::ReplayBuffer buffer(16);
+    const auto stats = az::RunSelfPlay(student, config, buffer, &teacher);
+    CHECK(stats.games == 2);
+    CHECK(stats.samples == 4);
+    CHECK(stats.teacher_policy_targets == 4);
+    CHECK(stats.student_policy_targets == 0);
+    if (batched) CHECK(stats.inference_forward_calls > 0);
+  }
+}
+
 void TestFastTrainerRejectsInvalidConfigAndMismatchedBest() {
   az::TrainConfig invalid;
   invalid.hard_fraction_ = std::numeric_limits<float>::quiet_NaN();
   az::Trainer invalid_trainer;
   CHECK(!invalid_trainer.Init(invalid));
+  az::TrainConfig invalid_threads;
+  invalid_threads.train_thread_num_ = 0;
+  az::Trainer invalid_thread_trainer;
+  CHECK(!invalid_thread_trainer.Init(invalid_threads));
 
   const char *dir = "/tmp/az_fast_bad_best";
   mkdir(dir, 0755);
@@ -877,6 +1241,13 @@ int main() {
   TestReplayLoadFailurePreservesBuffer();
   TestTeacherTargetsDoNotControlBehavior();
   TestEvalCacheCountersAreThreadSafe();
+  TestDynamicBatchEvaluatorMatchesSingleEvaluation();
+  TestDynamicBatchEvaluatorFlushesPartialBatch();
+  TestDynamicBatchEvaluatorDrainsOnStop();
+  TestPolicyValueResNetExpansionPreservesInference();
+  TestExpandedTrainerCheckpointResume();
+  TestSelfPlayUsesDynamicBatchEvaluator();
+  TestExpandedStudentSupportsSmallerTeacher();
   TestFastTrainerRejectsInvalidConfigAndMismatchedBest();
   TestPolicyHeadOnlyTrainerFreezesTrunkValueAndBatchNorm();
   TestBatchNormFixedStatisticsBackward();

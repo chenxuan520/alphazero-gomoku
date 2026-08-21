@@ -29,6 +29,12 @@ struct SelfPlayConfig {
   // replace only their policy target with a deeper, noise-free search.
   float teacher_target_prob_ = 0.0f;
   int teacher_simulations_ = 600;
+  // Opt-in cross-game dynamic batching. Historical worker-local evaluator
+  // behavior is unchanged when false.
+  bool use_batch_inference_ = false;
+  int inference_batch_size_ = 32;
+  int inference_wait_us_ = 200;
+  int inference_thread_num_ = 1;
 };
 
 struct SelfPlayStats {
@@ -42,6 +48,10 @@ struct SelfPlayStats {
   double eval_cache_hit_rate = 0.0;
   std::size_t student_policy_targets = 0;
   std::size_t teacher_policy_targets = 0;
+  std::size_t inference_forward_calls = 0;
+  double inference_average_batch = 0.0;
+  int inference_max_batch = 0;
+  double inference_average_queue_wait_us = 0.0;
 };
 
 // Runs game_num self-play games with the given master net, adding all

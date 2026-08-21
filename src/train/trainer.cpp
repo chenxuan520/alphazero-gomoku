@@ -1,4 +1,5 @@
 #include "train/trainer.h"
+#include "train/model_expand.h"
 
 #include <cstdarg>
 #include <chrono>
@@ -185,7 +186,11 @@ bool Trainer::Init(const TrainConfig &config) {
       config.selfplay_.teacher_target_prob_ > 1.0f ||
       config.selfplay_.teacher_simulations_ <= 0 ||
       (config.selfplay_.teacher_target_prob_ > 0.0f &&
-       config.teacher_model_.empty())) {
+       config.teacher_model_.empty()) ||
+      config.selfplay_.inference_batch_size_ <= 0 ||
+      config.selfplay_.inference_wait_us_ < 0 ||
+      config.selfplay_.inference_thread_num_ <= 0 ||
+      config.train_thread_num_ <= 0) {
     std::fprintf(stderr, "[trainer] invalid fast-training config\n");
     return false;
   }
@@ -193,7 +198,7 @@ bool Trainer::Init(const TrainConfig &config) {
   mkdir(config_.run_dir_.c_str(), 0755);
   log_path_ = config_.run_dir_ + "/train.log";
 
-  config_.net_.thread_num_ = 4; // trainer may use the global pool
+  config_.net_.thread_num_ = config_.train_thread_num_;
   if (net_.Init(config_.net_) != deeplearning::PolicyValueResNet::SUCCESS) {
     std::fprintf(stderr, "[trainer] net init failed: %s\n",
                  net_.err_msg().c_str());
@@ -246,8 +251,17 @@ bool Trainer::Init(const TrainConfig &config) {
     }
   }
   if (iteration_ == 0 && !config_.init_model_.empty()) {
-    if (net_.Load(config_.init_model_) !=
-        deeplearning::PolicyValueResNet::SUCCESS) {
+    bool loaded = false;
+    if (config_.expand_init_model_) {
+      deeplearning::PolicyValueResNet source;
+      loaded = source.Load(config_.init_model_) ==
+                   deeplearning::PolicyValueResNet::SUCCESS &&
+               ExpandPolicyValueResNet(net_, source);
+    } else {
+      loaded = net_.Load(config_.init_model_) ==
+               deeplearning::PolicyValueResNet::SUCCESS;
+    }
+    if (!loaded) {
       std::fprintf(stderr, "[trainer] init model load failed: %s\n",
                    net_.err_msg().c_str());
       return false;
@@ -255,8 +269,19 @@ bool Trainer::Init(const TrainConfig &config) {
   }
   if (iteration_ == 0 && !config_.init_best_model_.empty()) {
     deeplearning::PolicyValueResNet best;
-    if (best.Load(config_.init_best_model_) !=
-        deeplearning::PolicyValueResNet::SUCCESS) {
+    bool best_loaded = false;
+    if (config_.expand_init_model_) {
+      if (best.Init(config_.net_) == deeplearning::PolicyValueResNet::SUCCESS) {
+        deeplearning::PolicyValueResNet source_best;
+        best_loaded = source_best.Load(config_.init_best_model_) ==
+                          deeplearning::PolicyValueResNet::SUCCESS &&
+                      ExpandPolicyValueResNet(best, source_best);
+      }
+    } else {
+      best_loaded = best.Load(config_.init_best_model_) ==
+                    deeplearning::PolicyValueResNet::SUCCESS;
+    }
+    if (!best_loaded) {
       std::fprintf(stderr, "[trainer] init best load failed: %s\n",
                    best.err_msg().c_str());
       return false;
@@ -282,7 +307,12 @@ bool Trainer::Init(const TrainConfig &config) {
                    teacher_net_->err_msg().c_str());
       return false;
     }
-    if (!SameNetworkStructure(net_.config(), teacher_net_->config())) {
+    const auto &student_config = net_.config();
+    const auto &teacher_config = teacher_net_->config();
+    if (student_config.input_channels_ != teacher_config.input_channels_ ||
+        student_config.board_height_ != teacher_config.board_height_ ||
+        student_config.board_width_ != teacher_config.board_width_ ||
+        student_config.policy_size_ != teacher_config.policy_size_) {
       std::fprintf(stderr, "[trainer] teacher structure mismatch\n");
       return false;
     }
@@ -771,14 +801,19 @@ void Trainer::Run() {
     const double avg_moves =
         sp.games > 0 ? sp.moves_total / sp.games : 0.0;
     WriteLog("{\"iter\":%d,\"phase\":\"selfplay_done\",\"games\":%d,"
-             "\"avg_moves\":%.1f,\"cache_size\":%.0f,"
-              "\"cache_hit_rate\":%.3f,\"buffer\":%zu,"
-               "\"student_targets\":%zu,\"teacher_targets\":%zu,"
-               "\"elapsed_sec\":%.3f}",
+              "\"avg_moves\":%.1f,\"cache_size\":%.0f,"
+               "\"cache_hit_rate\":%.3f,\"buffer\":%zu,"
+                "\"student_targets\":%zu,\"teacher_targets\":%zu,"
+                "\"inference_forwards\":%zu,\"inference_avg_batch\":%.2f,"
+                "\"inference_max_batch\":%d,"
+                "\"inference_avg_wait_us\":%.1f,"
+                "\"elapsed_sec\":%.3f}",
                iteration_, sp.games, avg_moves, sp.eval_cache_size,
                sp.eval_cache_hit_rate, buffer_.Size(),
                sp.student_policy_targets, sp.teacher_policy_targets,
-               selfplay_seconds);
+                sp.inference_forward_calls, sp.inference_average_batch,
+                sp.inference_max_batch, sp.inference_average_queue_wait_us,
+                selfplay_seconds);
 
     // training steps
     double policy_loss_sum = 0.0, value_loss_sum = 0.0;

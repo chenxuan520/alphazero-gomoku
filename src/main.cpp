@@ -7,6 +7,7 @@
 #include "arena/gauntlet.h"
 #include "game/gomoku.h"
 #include "serve/serve.h"
+#include "train/model_expand.h"
 #include "train/trainer.h"
 
 #include <atomic>
@@ -61,15 +62,20 @@ void PrintUsage() {
       "  bench  [--trunk N] [--blocks N] [--batch B] [--threads T] [--iters N]\n"
       "  bench  --concurrent N [--iters N]\n"
       "  info\n"
+      "  expand --source FILE --out FILE [--trunk 64] [--blocks 8]\n"
       "train options:\n"
       "  --run-dir DIR (runtime)  --iterations N (-1 forever)  --seed N\n"
       "  --workers N (20)  --games-per-iter N (40)  --sims N (100)\n"
+      "  --batch-inference 0|1  --inference-batch N (32)\n"
+      "  --inference-wait-us N (200)  --inference-threads N (1)\n"
       "  --train-steps N (150)  --batch N (256)\n"
+      "  --train-threads N (4)\n"
       "  --lr X (1e-3)  --wd X (1e-4)  --value-weight X\n"
       "  --hard-fraction X (.3)  --buffer N (200000)\n"
       "  --policy-head-only 0|1 (0)\n"
       "  --resume 0|1  --cache 0|1\n"
       "  --init-model FILE  --init-best-model FILE\n"
+      "  --expand-init 0|1 (0, Net2Net widen/deepen init model)\n"
       "  --teacher-model FILE  --teacher-sims N  --teacher-target-prob X\n"
       "  --max-moves N (200)  --temp-moves N (12)\n"
       "  --cpuct X (1.5)  --dir-eps X (0.25)  --dir-alpha X (0.3)\n"
@@ -447,6 +453,55 @@ int CmdInfo() {
   return 0;
 }
 
+int CmdExpand(int argc, char **argv) {
+  std::string source_path, output_path;
+  int trunk = 64, blocks = 8, threads = 1;
+  if ((argc - 2) % 2 != 0) {
+    std::fprintf(stderr, "missing value for %s\n", argv[argc - 1]);
+    return 1;
+  }
+  for (int i = 2; i + 1 < argc; i += 2) {
+    if (!std::strcmp(argv[i], "--source")) source_path = argv[i + 1];
+    else if (!std::strcmp(argv[i], "--out")) output_path = argv[i + 1];
+    else if (!std::strcmp(argv[i], "--trunk")) trunk = std::atoi(argv[i + 1]);
+    else if (!std::strcmp(argv[i], "--blocks")) blocks = std::atoi(argv[i + 1]);
+    else if (!std::strcmp(argv[i], "--threads")) threads = std::atoi(argv[i + 1]);
+    else {
+      std::fprintf(stderr, "unknown expand option: %s\n", argv[i]);
+      return 1;
+    }
+  }
+  if (source_path.empty() || output_path.empty() || trunk <= 0 ||
+      blocks <= 0 || threads <= 0) {
+    std::fprintf(stderr,
+                 "expand requires --source FILE --out FILE and positive dimensions\n");
+    return 1;
+  }
+  PolicyValueResNet source;
+  if (source.Load(source_path) != PolicyValueResNet::SUCCESS) {
+    std::fprintf(stderr, "source load failed: %s\n", source.err_msg().c_str());
+    return 1;
+  }
+  auto config = source.config();
+  config.trunk_channels_ = trunk;
+  config.residual_block_num_ = blocks;
+  config.thread_num_ = threads;
+  PolicyValueResNet destination;
+  if (destination.Init(config) != PolicyValueResNet::SUCCESS ||
+      !az::ExpandPolicyValueResNet(destination, source) ||
+      destination.Save(output_path) != PolicyValueResNet::SUCCESS) {
+    std::fprintf(stderr, "model expansion failed: %s\n",
+                 destination.err_msg().c_str());
+    return 1;
+  }
+  std::printf("expanded %s -> %s: trunk %d->%d, blocks %d->%d, params=%zu\n",
+              source_path.c_str(), output_path.c_str(),
+              source.config().trunk_channels_, trunk,
+              source.config().residual_block_num_, blocks,
+              destination.parameter_count());
+  return 0;
+}
+
 // ---------------- train ----------------
 
 int CmdTrain(int argc, char **argv) {
@@ -459,9 +514,18 @@ int CmdTrain(int argc, char **argv) {
   config.selfplay_.temperature_move_cutoff_ = 12;
   config.selfplay_.mcts_.simulation_num_ = 100;
 
-  if (argc > 2 && !std::strcmp(argv[argc - 1], "--policy-head-only")) {
-    std::fprintf(stderr, "missing value for --policy-head-only (expected 0|1)\n");
-    return 1;
+  if (argc > 2) {
+    const char *last = argv[argc - 1];
+    if (!std::strcmp(last, "--policy-head-only") ||
+        !std::strcmp(last, "--batch-inference") ||
+        !std::strcmp(last, "--inference-batch") ||
+        !std::strcmp(last, "--inference-wait-us") ||
+        !std::strcmp(last, "--inference-threads") ||
+        !std::strcmp(last, "--train-threads") ||
+        !std::strcmp(last, "--expand-init")) {
+      std::fprintf(stderr, "missing value for %s\n", last);
+      return 1;
+    }
   }
 
   for (int i = 2; i + 1 < argc; i += 2) {
@@ -475,6 +539,7 @@ int CmdTrain(int argc, char **argv) {
     else if (!std::strcmp(key, "--sims")) config.selfplay_.mcts_.simulation_num_ = std::atoi(value);
     else if (!std::strcmp(key, "--train-steps")) config.train_steps_ = std::atoi(value);
     else if (!std::strcmp(key, "--batch")) config.batch_size_ = std::atoi(value);
+    else if (!std::strcmp(key, "--train-threads")) config.train_thread_num_ = std::atoi(value);
     else if (!std::strcmp(key, "--lr")) config.learning_rate_ = std::atof(value);
     else if (!std::strcmp(key, "--wd")) config.weight_decay_ = std::atof(value);
     else if (!std::strcmp(key, "--value-weight")) config.value_weight_ = std::atof(value);
@@ -489,8 +554,25 @@ int CmdTrain(int argc, char **argv) {
     else if (!std::strcmp(key, "--buffer")) config.buffer_capacity_ = std::stoul(value);
     else if (!std::strcmp(key, "--resume")) config.resume_ = std::atoi(value) != 0;
     else if (!std::strcmp(key, "--cache")) config.selfplay_.use_cache_ = std::atoi(value) != 0;
+    else if (!std::strcmp(key, "--batch-inference")) {
+      if (std::strcmp(value, "0") && std::strcmp(value, "1")) {
+        std::fprintf(stderr, "invalid --batch-inference (expected 0|1)\n");
+        return 1;
+      }
+      config.selfplay_.use_batch_inference_ = !std::strcmp(value, "1");
+    }
+    else if (!std::strcmp(key, "--inference-batch")) config.selfplay_.inference_batch_size_ = std::atoi(value);
+    else if (!std::strcmp(key, "--inference-wait-us")) config.selfplay_.inference_wait_us_ = std::atoi(value);
+    else if (!std::strcmp(key, "--inference-threads")) config.selfplay_.inference_thread_num_ = std::atoi(value);
     else if (!std::strcmp(key, "--init-model")) config.init_model_ = value;
     else if (!std::strcmp(key, "--init-best-model")) config.init_best_model_ = value;
+    else if (!std::strcmp(key, "--expand-init")) {
+      if (std::strcmp(value, "0") && std::strcmp(value, "1")) {
+        std::fprintf(stderr, "invalid --expand-init (expected 0|1)\n");
+        return 1;
+      }
+      config.expand_init_model_ = !std::strcmp(value, "1");
+    }
     else if (!std::strcmp(key, "--teacher-model")) config.teacher_model_ = value;
     else if (!std::strcmp(key, "--teacher-sims")) config.selfplay_.teacher_simulations_ = std::atoi(value);
     else if (!std::strcmp(key, "--teacher-target-prob")) config.selfplay_.teacher_target_prob_ = std::atof(value);
@@ -562,6 +644,7 @@ int main(int argc, char **argv) {
   if (command == "gauntlet") return CmdGauntlet(argc, argv);
   if (command == "play") return CmdPlay(argc, argv);
   if (command == "info") return CmdInfo();
+  if (command == "expand") return CmdExpand(argc, argv);
   if (command == "serve") return CmdServe(argc, argv);
   PrintUsage();
   return 1;
