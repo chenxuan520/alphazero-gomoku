@@ -27,6 +27,16 @@ RAM, and an isolated experimental runtime.
 
 ## Current result
 
+- Pure run launched 2026-08-21 (PID 2252869, `runtime_v2/evolved64x8_pure`):
+  exact iter440->64x8 expansion, fresh optimizer, iter440's 200k pure
+  self-play replay imported via `--init-buffer`, 48 workers / 80 games / 600
+  sims / 100 train steps / batch 128 / lr 1e-4 / wd 1e-4 / value-weight 2 /
+  cpuct 0.8 / temp-moves 6 / hard-seed 0.3; internal gate every 5 iterations,
+  40 games vs frozen expanded baseline at 55%; no teacher anywhere. Measured
+  pace ~55-70 min/iteration: first internal gate at ~5-6 h, 10-iteration
+  direction signal at ~11-12 h, 30-iteration horizon ~1.5 days. External
+  48/96/600 acceptance gates remain the only publish criteria.
+
 - Two teacher-target pilots were rejected after user review: they are expert
   distillation rather than the requested pure current-network AlphaZero loop.
   The active route is now: exact iter440->64x8 expansion, fresh optimizer,
