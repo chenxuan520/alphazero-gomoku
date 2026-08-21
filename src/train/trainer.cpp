@@ -299,6 +299,15 @@ bool Trainer::Init(const TrainConfig &config) {
     }
     current_best_generation_ = 0;
   }
+  if (iteration_ == 0 && !config_.init_buffer_.empty()) {
+    if (!buffer_.Load(config_.init_buffer_)) {
+      std::fprintf(stderr, "[trainer] init buffer load failed: %s\n",
+                   config_.init_buffer_.c_str());
+      return false;
+    }
+    std::fprintf(stderr, "[trainer] loaded initial replay: %zu samples\n",
+                 buffer_.Size());
+  }
   if (!config_.teacher_model_.empty()) {
     teacher_net_.reset(new deeplearning::PolicyValueResNet());
     if (teacher_net_->Load(config_.teacher_model_) !=

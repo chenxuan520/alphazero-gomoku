@@ -74,7 +74,7 @@ void PrintUsage() {
       "  --hard-fraction X (.3)  --buffer N (200000)\n"
       "  --policy-head-only 0|1 (0)\n"
       "  --resume 0|1  --cache 0|1\n"
-      "  --init-model FILE  --init-best-model FILE\n"
+      "  --init-model FILE  --init-best-model FILE  --init-buffer FILE\n"
       "  --expand-init 0|1 (0, Net2Net widen/deepen init model)\n"
       "  --teacher-model FILE  --teacher-sims N  --teacher-target-prob X\n"
       "  --max-moves N (200)  --temp-moves N (12)\n"
@@ -522,6 +522,7 @@ int CmdTrain(int argc, char **argv) {
         !std::strcmp(last, "--inference-wait-us") ||
         !std::strcmp(last, "--inference-threads") ||
         !std::strcmp(last, "--train-threads") ||
+        !std::strcmp(last, "--init-buffer") ||
         !std::strcmp(last, "--expand-init")) {
       std::fprintf(stderr, "missing value for %s\n", last);
       return 1;
@@ -566,6 +567,7 @@ int CmdTrain(int argc, char **argv) {
     else if (!std::strcmp(key, "--inference-threads")) config.selfplay_.inference_thread_num_ = std::atoi(value);
     else if (!std::strcmp(key, "--init-model")) config.init_model_ = value;
     else if (!std::strcmp(key, "--init-best-model")) config.init_best_model_ = value;
+    else if (!std::strcmp(key, "--init-buffer")) config.init_buffer_ = value;
     else if (!std::strcmp(key, "--expand-init")) {
       if (std::strcmp(value, "0") && std::strcmp(value, "1")) {
         std::fprintf(stderr, "invalid --expand-init (expected 0|1)\n");

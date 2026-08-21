@@ -29,6 +29,7 @@ struct TrainConfig {
 
   std::string init_model_;
   std::string init_best_model_;
+  std::string init_buffer_;
   std::string teacher_model_;
   bool expand_init_model_ = false;
 

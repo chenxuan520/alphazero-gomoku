@@ -981,6 +981,53 @@ void TestExpandedTrainerCheckpointResume() {
   std::system("rm -rf /tmp/az_expanded_resume");
 }
 
+void TestFreshTrainerLoadsInitialReplay() {
+  const char *dir = "/tmp/az_init_replay";
+  std::system("rm -rf /tmp/az_init_replay");
+  CHECK(mkdir(dir, 0755) == 0);
+  const std::string source_path = std::string(dir) + "/source.net";
+  const std::string replay_path = std::string(dir) + "/seed.bin";
+  deeplearning::PolicyValueResNet source;
+  CHECK(source.Init(TinyNetConfig(501)) ==
+        deeplearning::PolicyValueResNet::SUCCESS);
+  CHECK(source.Save(source_path) == deeplearning::PolicyValueResNet::SUCCESS);
+  az::ReplayBuffer seed(16);
+  az::Sample sample;
+  sample.planes[0] = 1.0f;
+  sample.policy[A(7, 7)] = 1.0f;
+  sample.value = 1.0f;
+  seed.Push(sample);
+  CHECK(seed.Save(replay_path));
+
+  az::TrainConfig config;
+  config.net_ = TinyNetConfig(501);
+  config.run_dir_ = dir;
+  config.iterations_ = 1;
+  config.resume_ = false;
+  config.init_model_ = source_path;
+  config.init_best_model_ = source_path;
+  config.init_buffer_ = replay_path;
+  config.buffer_capacity_ = 16;
+  config.selfplay_.worker_num_ = 1;
+  config.selfplay_.game_num_ = 1;
+  config.selfplay_.mcts_.simulation_num_ = 1;
+  config.selfplay_.mcts_.dirichlet_epsilon_ = 0.0f;
+  config.selfplay_.max_moves_ = 1;
+  config.selfplay_.temperature_move_cutoff_ = 0;
+  config.train_steps_ = 0;
+  config.gate_every_ = 100;
+  config.save_buffer_every_ = 1;
+  az::Trainer trainer;
+  CHECK(trainer.Init(config));
+  trainer.Run();
+  az::ReplayBuffer loaded(16);
+  CHECK(loaded.Load(std::string(dir) + "/checkpoint.buffer.1.bin"));
+  CHECK(loaded.Size() == 2);
+  CHECK(loaded.At(0).planes[0] == 1.0f);
+  CHECK(loaded.At(0).value == 1.0f);
+  std::system("rm -rf /tmp/az_init_replay");
+}
+
 void TestSelfPlayUsesDynamicBatchEvaluator() {
   deeplearning::PolicyValueResNet master;
   CHECK(master.Init(TinyNetConfig(213)) ==
@@ -1246,6 +1293,7 @@ int main() {
   TestDynamicBatchEvaluatorDrainsOnStop();
   TestPolicyValueResNetExpansionPreservesInference();
   TestExpandedTrainerCheckpointResume();
+  TestFreshTrainerLoadsInitialReplay();
   TestSelfPlayUsesDynamicBatchEvaluator();
   TestExpandedStudentSupportsSmallerTeacher();
   TestFastTrainerRejectsInvalidConfigAndMismatchedBest();
