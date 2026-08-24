@@ -27,15 +27,20 @@ RAM, and an isolated experimental runtime.
 
 ## Current result
 
-- Pure run launched 2026-08-21 (PID 2252869, `runtime_v2/evolved64x8_pure`):
-  exact iter440->64x8 expansion, fresh optimizer, iter440's 200k pure
-  self-play replay imported via `--init-buffer`, 48 workers / 80 games / 600
-  sims / 100 train steps / batch 128 / lr 1e-4 / wd 1e-4 / value-weight 2 /
-  cpuct 0.8 / temp-moves 6 / hard-seed 0.3; internal gate every 5 iterations,
-  40 games vs frozen expanded baseline at 55%; no teacher anywhere. Measured
-  pace ~55-70 min/iteration: first internal gate at ~5-6 h, 10-iteration
-  direction signal at ~11-12 h, 30-iteration horizon ~1.5 days. External
-  48/96/600 acceptance gates remain the only publish criteria.
+- **COMPLETE — all acceptance gates passed.** Candidate
+  `runtime_v2/evolved64x8_pure/checkpoint.latest.30.net`
+  (SHA256 `28be769f...f974a2`) beats frozen iter440 materially: 48 sims
+  203:157 over 360 games across 3 seeds (56.4%, CI excludes 50%); 96 sims
+  107:93; 600 sims 26:14 (65.0%); gauntlet L6/L7 both colors 87.5% vs 50%
+  (white-side weakness of iter440 fully repaired). Full details in
+  `EVOLVED64X8_ACCEPTANCE.md`. Production channels/assets untouched; publish
+  decision left to the user.
+
+- Pure run completed 2026-08-24 (30 iterations, ~61h). Internal 600-sim gates:
+  0.550, 0.550, 0.600 (promoted), 0.625 (promoted), 0.475, 0.425.
+  Evaluation caveat found: at temp 0 deterministic seeds, near-equal nets
+  collapse to black-wins-always; acceptance uses temp-moves 6 variety, which
+  matches the internal gate flavour and discriminates strength correctly.
 
 - Two teacher-target pilots were rejected after user review: they are expert
   distillation rather than the requested pure current-network AlphaZero loop.
