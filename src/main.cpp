@@ -225,6 +225,7 @@ int CmdEval(int argc, char **argv) {
 int CmdArena(int argc, char **argv) {
   std::string model_a = "runtime/latest.net", model_b = "runtime/best.net";
   int games = 20, sims = 100, workers = 8, max_moves = 200, seed = 7;
+  int sims_b = -1;
   int temp_moves = 0;
   float dir_eps = 0.0f, dir_alpha = 0.3f;
   bool deterministic_games = false, reuse_tree = false;
@@ -233,6 +234,7 @@ int CmdArena(int argc, char **argv) {
     if (!std::strcmp(argv[i], "--model-b")) model_b = argv[i + 1];
     if (!std::strcmp(argv[i], "--games")) games = std::atoi(argv[i + 1]);
     if (!std::strcmp(argv[i], "--sims")) sims = std::atoi(argv[i + 1]);
+    if (!std::strcmp(argv[i], "--sims-b")) sims_b = std::atoi(argv[i + 1]);
     if (!std::strcmp(argv[i], "--workers")) workers = std::atoi(argv[i + 1]);
     if (!std::strcmp(argv[i], "--max-moves"))
       max_moves = std::atoi(argv[i + 1]);
@@ -258,7 +260,9 @@ int CmdArena(int argc, char **argv) {
   mcts.deterministic_game_seeds_ = deterministic_games;
   mcts.reuse_tree_ = reuse_tree;
   auto stats =
-      az::RunDuel(a, b, mcts, games, workers, temp_moves, max_moves, seed);
+      az::RunDuel(a, b, mcts, games, workers, temp_moves, max_moves, seed, sims_b);
+  if (sims_b > 0)
+    std::printf("arena asymmetric sims: A=%d B=%d\n", sims, sims_b);
   const int decisive = stats.a_wins + stats.b_wins;
   std::printf("arena %s vs %s: A %s  (rate=%.2f over %d decisive)\n",
               model_a.c_str(), model_b.c_str(), ResultText(stats),

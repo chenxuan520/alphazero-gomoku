@@ -292,12 +292,17 @@ SelfPlayStats RunSelfPlay(deeplearning::PolicyValueResNet &master,
 
 int PlayMatch(INetEvaluator &black_evaluator, INetEvaluator &white_evaluator,
               const MctsConfig &mcts_config, int temperature_move_cutoff,
-              int max_moves, std::mt19937 &rng) {
+              int max_moves, std::mt19937 &rng,
+              const MctsConfig *mcts_config_white) {
   MctsConfig match_config = mcts_config;
   // Preserve historical match/gate behavior unless a caller explicitly opts
   // into the standards-compliant noisy evaluation mode.
   if (!match_config.normalized_dirichlet_)
     match_config.dirichlet_epsilon_ = 0.0f;
+  MctsConfig white_config =
+      mcts_config_white ? *mcts_config_white : match_config;
+  if (!white_config.normalized_dirichlet_)
+    white_config.dirichlet_epsilon_ = 0.0f;
   Mcts mcts_black, mcts_white;
   Gomoku game;
   std::vector<int> visit_action, visit_count;
@@ -309,7 +314,10 @@ int PlayMatch(INetEvaluator &black_evaluator, INetEvaluator &white_evaluator,
                                                 : white_evaluator;
     Mcts &mcts =
         game.current_player() == Gomoku::kBlack ? mcts_black : mcts_white;
-    mcts.Search(game, match_config, evaluator, rng, visit_action, visit_count);
+    const MctsConfig &side_config = game.current_player() == Gomoku::kBlack
+                                        ? match_config
+                                        : white_config;
+    mcts.Search(game, side_config, evaluator, rng, visit_action, visit_count);
     Mcts::VisitDistribution(visit_action, visit_count, pi.data());
     int action;
     if (game.move_count() < temperature_move_cutoff) {
@@ -350,8 +358,11 @@ void RandomEvaluator::Predict(const Gomoku &game, float *policy,
 DuelStats RunDuel(deeplearning::PolicyValueResNet &a,
                   deeplearning::PolicyValueResNet &b,
                   const MctsConfig &mcts_config, int game_num, int worker_num,
-                  int temperature_move_cutoff, int max_moves, int seed) {
+                  int temperature_move_cutoff, int max_moves, int seed,
+                  int sims_b) {
   DuelStats stats;
+  MctsConfig mcts_config_b = mcts_config;
+  if (sims_b > 0) mcts_config_b.simulation_num_ = sims_b;
   std::mutex mutex;
   std::atomic<int> next_game{0};
   std::vector<std::unique_ptr<Evaluator>> evaluators_a(worker_num);
@@ -393,9 +404,13 @@ DuelStats RunDuel(deeplearning::PolicyValueResNet &a,
         std::swap(black, white);
         a_is_black = false;
       }
-      const int result = PlayMatch(*black, *white, mcts_config,
+      const MctsConfig &black_config =
+          a_is_black ? mcts_config : mcts_config_b;
+      const MctsConfig &white_config =
+          a_is_black ? mcts_config_b : mcts_config;
+      const int result = PlayMatch(*black, *white, black_config,
                                    temperature_move_cutoff, max_moves,
-                                   *rng);
+                                   *rng, &white_config);
       std::lock_guard<std::mutex> lock(mutex);
       if (result == 2) ++stats.draws;
       else if ((result == Gomoku::kBlack) == a_is_black) {

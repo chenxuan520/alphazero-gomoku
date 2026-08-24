@@ -67,7 +67,8 @@ SelfPlayStats RunSelfPlay(deeplearning::PolicyValueResNet &master,
 // +1 black wins, -1 white wins, 0 draw (including the move cap).
 int PlayMatch(INetEvaluator &black_evaluator, INetEvaluator &white_evaluator,
               const MctsConfig &mcts_config, int temperature_move_cutoff,
-              int max_moves, std::mt19937 &rng);
+              int max_moves, std::mt19937 &rng,
+              const MctsConfig *mcts_config_white = nullptr);
 
 // A player that moves uniformly at random (no search).
 class RandomEvaluator : public INetEvaluator {
@@ -88,7 +89,8 @@ struct DuelStats {
 DuelStats RunDuel(deeplearning::PolicyValueResNet &a,
                   deeplearning::PolicyValueResNet &b,
                   const MctsConfig &mcts_config, int game_num, int worker_num,
-                  int temperature_move_cutoff, int max_moves, int seed);
+                  int temperature_move_cutoff, int max_moves, int seed,
+                  int sims_b = -1);
 
 // Model (MCTS-guided) vs uniform-random player, alternating colors.
 // Returns model win/loss/draw counts in stats.a/b/draws.
