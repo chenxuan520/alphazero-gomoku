@@ -76,8 +76,43 @@ gauntlet 回归（48 sims，每级每色 10 局，同色同种子）：
   优势未达到统计显著；除非引擎提速（WebGPU/批量化，预计 5-10× 空间）
   或训练出小尺寸的强模型。
 
-## 6. 未执行（待确认）
+## 6. 收官后追加测量（2026-08-24）
 
-- 生产 `channels/stable.json` / `deep.json` 未改动；模型资产仓库未推送。
-- 发布动作在 `~/self/llm/models/alphazero-gomoku/`（CF Worker，public/ 资产），
-  本机无 wrangler CLI，部署需用户授权或代为执行。
+**等效算力马赛克**（latest.30@48 sims 固定，抬 iter440 算力；temp6/确定性种子）：
+
+| iter440 模拟数 | 48 | 96 | 168 | 300 | 600 |
+|---|---:|---:|---:|---:|---:|
+| latest.30 胜率 | 56% (n=360) | 43.3% (n=120) | 40% (n=100) | 30% (n=60) | 20% (n=40) |
+
+交叉点在 48–96 之间：**latest.30 @48 sims ≈ iter440 @ 75–85 sims（1.6–1.8× 算力当量）**。
+iter440 在 96→168 已明显饱和，浅网络的深搜收益看清早限制。
+
+**自对弈先手胜率基线**（同模型互搏、48 sims、temp6、各 120 局）：
+
+- latest.30：黑棋总胜率 82/120 = **68.3%**
+- iter440：81/120 = 67.5%
+
+量级回答"黑棋必胜"：真实对局下先手优势是 68% 而非 100%；证明级先手必胜
+（PN-search / threat-space search 路线）用户已决定不做。
+
+**续训平台期证据**（同配方 iter30→35）：
+
+| 快照 | 内部 gate（对 best.20） | 外部校准（对 iter440@48，n=120） |
+|---|---:|---:|
+| latest.30 | 0.425 | 56.4%（n=360 口径） |
+| latest.35 | 0.350 | 55.8% |
+
+内部下滑、外部持平 —— gate 读数受 40 局噪声窗支配。结论：同配方（lr 1e-4 /
+100 steps/iter / 600 sims）已饱和，**最新产物与 iter30 基本同水平**。
+
+**教训**：trainer 仅保留 current/previous 两个 latest 代（
+`src/train/trainer.cpp:539-543` 发布即删旧代）——续训把验收快照
+`checkpoint.latest.30.net` 删掉了，所有外部引用瞬间失效。归档规范已立：
+每 5 轮把 checkpoint 复制进 `runtime_v2/candidates/<name>-<sha8>.net`
+（只读）再消费。
+
+## 7. 未执行（待确认）
+
+- 生产 `channels/*.json` 模型未改动；Worker 资产已提交 `llm@42625ff`（v2 并行
+  引擎 + engine 字段指向 v2），部署待用户 `wrangler deploy`。
+- latest.30 候选 SHA256：`28be769f…f974a2f`；vault 在 `runtime_v2/candidates/`。

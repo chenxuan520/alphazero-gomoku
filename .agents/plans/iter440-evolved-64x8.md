@@ -27,7 +27,16 @@ RAM, and an isolated experimental runtime.
 
 ## Current result
 
-- **COMPLETE — all acceptance gates passed.** Candidate
+- **2026-08-24 update: plateau reached; recipe-B branch running.**
+  Main line resumed (PID 2164266, cores 0-39, iter36→60) purely for
+  continuation data after acceptance evidence: same-recipe continuation
+  iter30→iter35 was externally flat (56.4% → 55.8% @48). Internal gates on
+  the moving best read 0.475/0.425/0.350 due to 40-game noise. Recipe B
+  (PID 2164269, cores 40-55, `runtime_v2/evolved64x8_recipeB`) tests the
+  self-play-budget lever only: sims 600→900, games 28/iter, train-steps 150,
+  init = latest.30 weights + pure replay buffer.35, internal gates every 2
+  iterations directly vs the expanded-iter440 true baseline.
+- **COMPLETE — all acceptance gates passed** (unchanged from frozen record). Candidate
   `runtime_v2/evolved64x8_pure/checkpoint.latest.30.net`
   (SHA256 `28be769f...f974a2`) beats frozen iter440 materially: 48 sims
   203:157 over 360 games across 3 seeds (56.4%, CI excludes 50%); 96 sims
