@@ -27,18 +27,23 @@ RAM, and an isolated experimental runtime.
 
 ## Current result
 
-- **2026-08-24 update: plateau reached; recipe-B branch running.**
-  Main line resumed (PID 2164266, cores 0-39, iter36→60) purely for
-  continuation data after acceptance evidence: same-recipe continuation
-  iter30→iter35 was externally flat (56.4% → 55.8% @48). Internal gates on
-  the moving best read 0.475/0.425/0.350 due to 40-game noise. Recipe B
-  (PID 2164269, cores 40-55, `runtime_v2/evolved64x8_recipeB`) tests the
-  self-play-budget lever only: sims 600→900, games 28/iter, train-steps 150,
-  init = latest.30 weights + pure replay buffer.35, internal gates every 2
-  iterations directly vs the expanded-iter440 true baseline.
+- **CLOSED 2026-08-27.** Final read: two recipes (600-sim continuation and
+  900-sim continuation) converge to the same external level (~55.8-56.4% vs
+  frozen iter440 @48 sims; ~60-65% @600), with no gate promotions late in
+  either run (600-line: none after iter20; 900-line: none after iter2, gates
+  0.550/0.400/0.425/0.500). User verdict: the margin does not justify
+  replacing production at the common 48-sim budget; training fully stopped.
+  Champion artifact: `runtime_v2/candidates/evolved64x8-latest30-28be769f.net`
+  (SHA256-pinned, read-only). Production stable/deep intentionally unchanged.
+- Parallel browser engine v2 (worker virtual-loss batching + fast conv)
+  shipped independently of the model decision: GitHub Pages labs.js live,
+  Cloudflare Worker assets deployed (version d7a30e53, commit
+  deeplearning-model@42625ff). iter440 @48 sims measured at 1.8-2.0s/move on
+  this host (was 3.7s).
 - **COMPLETE — all acceptance gates passed** (unchanged from frozen record). Candidate
-  `runtime_v2/evolved64x8_pure/checkpoint.latest.30.net`
-  (SHA256 `28be769f...f974a2`) beats frozen iter440 materially: 48 sims
+  `runtime_v2/candidates/evolved64x8-latest30-28be769f.net`
+  (SHA256 `28be769f...f974a2`; the in-run copy was later rotated away by
+  trainer retention, vault is canonical) beats frozen iter440 materially: 48 sims
   203:157 over 360 games across 3 seeds (56.4%, CI excludes 50%); 96 sims
   107:93; 600 sims 26:14 (65.0%); gauntlet L6/L7 both colors 87.5% vs 50%
   (white-side weakness of iter440 fully repaired). Full details in
