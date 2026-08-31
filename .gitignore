@@ -14,3 +14,5 @@ serve.out
 *.bin
 __pycache__/
 *.pyc
+
+runtime_1000sim/

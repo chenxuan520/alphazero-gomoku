@@ -10,12 +10,15 @@
 #include "train/model_expand.h"
 #include "train/trainer.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -54,6 +57,7 @@ void PrintUsage() {
       "         [--workers 8] [--temp-moves 0] [--dir-eps 0] [--dir-alpha .3]\n"
       "         [--deterministic-games 0] [--reuse-tree 0]\n"
       "  play   [--model FILE] [--sims 100] [--reuse-tree 0] (you play white)\n"
+      "  piskvork [--model FILE] [--sims 100] [--threads 0] [--seed N] (piskvork protocol)\n"
       "  serve  [--model FILE] [--port 8765] [--sims 800] [--threads 24]\n"
       "           (HTTP move API for the web frontend; CORS open)\n"
       "  gauntlet [--model FILE] [--games 10] [--workers 8] [--levels 6,7]\n"
@@ -637,6 +641,122 @@ int CmdServe(int argc, char **argv) {
 
 } // namespace
 
+// ---------------- piskvork protocol engine ----------------
+// Speaks the piskvork/Gomocup stdio protocol (freestyle 15x15 only) so that
+// tournament managers (and our crossmatch referee) can drive this binary as a
+// foreign engine. Commands: start/rectstart/restart/begin/turn/board/info/
+// about/end/game over. Deterministic strength: argmax of MCTS visit counts,
+// no root noise, no temperature window.
+int CmdPiskvork(int argc, char **argv) {
+  std::string model = "runtime/best.net";
+  int sims = 100, threads = 0, seed = 77;
+  for (int i = 2; i + 1 < argc; i += 2) {
+    if (!std::strcmp(argv[i], "--model")) model = argv[i + 1];
+    if (!std::strcmp(argv[i], "--sims")) sims = std::atoi(argv[i + 1]);
+    if (!std::strcmp(argv[i], "--threads")) threads = std::atoi(argv[i + 1]);
+    if (!std::strcmp(argv[i], "--seed")) seed = std::atoi(argv[i + 1]);
+  }
+  PolicyValueResNet net;
+  if (!LoadNet(model, net)) return 1;
+  az::Evaluator evaluator;
+  auto eval_config = net.config();
+  if (threads > 0) eval_config.thread_num_ = threads;
+  evaluator.Init(eval_config);
+  az::AssignWeights(evaluator.net(), net);
+
+  az::MctsConfig mcts;
+  mcts.simulation_num_ = sims;
+  mcts.dirichlet_epsilon_ = 0.0f;
+  mcts.normalized_dirichlet_ = false;
+  az::Mcts search;
+  std::mt19937 rng(static_cast<unsigned>(seed));
+
+  Gomoku game;
+  std::string line;
+  std::vector<int> visit_action, visit_count;
+  std::array<float, Gomoku::kActionNum> pi;
+
+  auto play_move = [&]() {
+    if (game.IsTerminal()) return -1;
+    if (game.move_count() == 0) return Gomoku::kActionNum / 2; // center
+    search.Search(game, mcts, evaluator, rng, visit_action, visit_count);
+    az::Mcts::VisitDistribution(visit_action, visit_count, pi.data());
+    const int action = static_cast<int>(std::max_element(pi.begin(), pi.end()) -
+                                        pi.begin());
+    if (!game.IsLegal(action)) return -1;
+    return action;
+  };
+
+  auto answer_move = [&]() {
+    const int action = play_move();
+    if (action < 0) {
+      std::printf("ERROR no legal move\n");
+      std::fflush(stdout);
+      return;
+    }
+    game.Apply(action);
+    int row, column;
+    Gomoku::CellXY(action, row, column);
+    std::printf("%d,%d\n", column, row); // piskvork sends x=col,y=row
+    std::fflush(stdout);
+  };
+
+  while (std::getline(std::cin, line)) {
+    // split command word
+    std::size_t sp = line.find_first_of(" \t\r");
+    std::string cmd = line.substr(0, sp);
+    std::string rest = sp == std::string::npos ? "" : line.substr(sp + 1);
+    for (auto &ch : cmd) ch = static_cast<char>(std::toupper(ch));
+
+    if (cmd == "START" || cmd == "RECTSTART") {
+      game.Reset();
+      std::printf("OK\n");
+    } else if (cmd == "RESTART") {
+      game.Reset();
+      std::printf("OK\n");
+    } else if (cmd == "BEGIN") {
+      // empty board, we are black
+      answer_move();
+    } else if (cmd == "TURN") {
+      int x = 0, y = 0;
+      std::sscanf(rest.c_str(), "%d,%d", &x, &y);
+      const int action = y * Gomoku::kBoardSize + x;
+      if (!game.IsLegal(action)) {
+        std::printf("ERROR illegal opponent move\n");
+      } else {
+        game.Apply(action);
+        answer_move();
+      }
+    } else if (cmd == "BOARD") {
+      game.Reset();
+      int count = 0;
+      std::string history;
+      while (std::getline(std::cin, history)) {
+        if (history == "done" || history == "DONE") break;
+        int x = 0, y = 0, side = 0;
+        if (std::sscanf(history.c_str(), "%d,%d,%d", &x, &y, &side) != 3)
+          continue;
+        const int action = y * Gomoku::kBoardSize + x;
+        if (!game.IsLegal(action)) continue; // tolerate duplicates
+        game.Apply(action);
+        count++;
+      }
+      // side to move is whose turn after the listed history — always us.
+      answer_move();
+    } else if (cmd == "ABOUT") {
+      std::printf("name=\"alphazero-gomoku\", version=\"k1000\", author=\"chenxuan520\"\n");
+    } else if (cmd == "END") {
+      return 0;
+    } else if (cmd == "INFO" || cmd == "GAMEOVER" || cmd == "EVALUATE") {
+      // accepted silently
+    } else if (!cmd.empty()) {
+      std::printf("ERROR Unknown command\n");
+    }
+    std::fflush(stdout);
+  }
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) {
     PrintUsage();
@@ -649,6 +769,7 @@ int main(int argc, char **argv) {
   if (command == "arena") return CmdArena(argc, argv);
   if (command == "gauntlet") return CmdGauntlet(argc, argv);
   if (command == "play") return CmdPlay(argc, argv);
+  if (command == "piskvork") return CmdPiskvork(argc, argv);
   if (command == "info") return CmdInfo();
   if (command == "expand") return CmdExpand(argc, argv);
   if (command == "serve") return CmdServe(argc, argv);
