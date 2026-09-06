@@ -1,6 +1,7 @@
 #pragma once
 
 #include "game/gomoku.h"
+#include "game/vcf.h"
 #include "train/evaluator.h"
 
 #include <random>
@@ -24,6 +25,10 @@ struct MctsConfig {
   bool reuse_tree_ = false;       // keep the selected subtree across moves
   int max_retained_nodes_ = 12000; // compact unreachable branches above this
   int max_retained_edges_ = 250000;
+  // VCF leaf assist (evaluation-only). 0 disables; >0 runs the one-sided VCF
+  // prover with this node budget on sharp leaves (either side has an active
+  // four-threat) and pins the proven value (+/-1) instead of the NN value.
+  int vcf_leaf_nodes_ = 0;
 };
 
 // Single-game MCTS over Gomoku with an injected evaluator. Reused across
@@ -97,6 +102,10 @@ private:
   static bool SamePosition(const Gomoku &left, const Gomoku &right);
   static float TerminalValue(const Gomoku &game);
   int SelectEdge(int node_index, float c_puct) const;
+  // Proves a VCF win/loss for the side to move at this leaf; pins `value`
+  // and returns true when decided. Only called when vcf_leaf_nodes_ > 0 and
+  // the position is sharp (some side has a live four-threat or five-point).
+  bool TryVcfValue(const Gomoku &game, float &value);
 
   std::vector<Node> nodes_;
   std::vector<Edge> edges_;
@@ -108,6 +117,8 @@ private:
   bool reuse_tree_active_ = false;
   bool budget_exhausted_ = false;
   float fpu_reduction_ = 0.25f; // set at Search() entry from config
+  int vcf_leaf_nodes_ = 0;      // set at Search() entry from config
+  VcfSolver vcf_solver_;        // reused across leaves; single-threaded
   // scratch
   std::vector<int> path_nodes_;
   std::vector<int> path_edges_;

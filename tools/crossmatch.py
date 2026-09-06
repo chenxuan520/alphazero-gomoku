@@ -198,14 +198,18 @@ def spawn(spec, tag):
     kind, parts = parse_side(spec)
     if kind == "az":
         model = parts[0]
-        sims = "100"; threads = "1"
+        sims = "100"; threads = "1"; vcf = "0"; vct = "0"
         for p in parts[1:]:
             k, v = p.split("=", 1)
             if k == "sims": sims = v
             if k == "threads": threads = v
+            if k == "vcf": vcf = v
+            if k == "vct": vct = v
         side = PiskvorkSide(AZ_BIN, ["piskvork", "--model", model,
-                                     "--sims", sims, "--threads", threads],
-                            name=f"az(s{sims})", cwd=os.path.join(
+                                     "--sims", sims, "--threads", threads,
+                                     "--vcf", vcf, "--vct", vct],
+                            name=f"az(s{sims}" + (f"v{vcf}" if vcf != "0"
+                                                  else "") + ("c" if vct != "0" else "") + ")", cwd=os.path.join(
                                 os.path.dirname(AZ_BIN), ".."))
         side.start_io()
         return side

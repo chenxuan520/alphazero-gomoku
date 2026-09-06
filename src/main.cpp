@@ -649,12 +649,18 @@ int CmdServe(int argc, char **argv) {
 // no root noise, no temperature window.
 int CmdPiskvork(int argc, char **argv) {
   std::string model = "runtime/best.net";
-  int sims = 100, threads = 0, seed = 77;
+  int sims = 100, threads = 0, seed = 77, vcf_nodes = 0, vct_nodes = 0;
   for (int i = 2; i + 1 < argc; i += 2) {
     if (!std::strcmp(argv[i], "--model")) model = argv[i + 1];
     if (!std::strcmp(argv[i], "--sims")) sims = std::atoi(argv[i + 1]);
     if (!std::strcmp(argv[i], "--threads")) threads = std::atoi(argv[i + 1]);
     if (!std::strcmp(argv[i], "--seed")) seed = std::atoi(argv[i + 1]);
+    // --vcf N: enable the VCF prover; N is the leaf-check node budget
+    // (root kill-move search uses a fixed larger budget).
+    if (!std::strcmp(argv[i], "--vcf")) vcf_nodes = std::atoi(argv[i + 1]);
+    // --vct N: also probe VCT-lite (live-three chains) at the root with this
+    // node budget when no VCF chain exists. Heavier; root-only for now.
+    if (!std::strcmp(argv[i], "--vct")) vct_nodes = std::atoi(argv[i + 1]);
   }
   PolicyValueResNet net;
   if (!LoadNet(model, net)) return 1;
@@ -668,7 +674,9 @@ int CmdPiskvork(int argc, char **argv) {
   mcts.simulation_num_ = sims;
   mcts.dirichlet_epsilon_ = 0.0f;
   mcts.normalized_dirichlet_ = false;
+  mcts.vcf_leaf_nodes_ = vcf_nodes;
   az::Mcts search;
+  az::VcfSolver vcf;
   std::mt19937 rng(static_cast<unsigned>(seed));
 
   Gomoku game;
@@ -679,6 +687,25 @@ int CmdPiskvork(int argc, char **argv) {
   auto play_move = [&]() {
     if (game.IsTerminal()) return -1;
     if (game.move_count() == 0) return Gomoku::kActionNum / 2; // center
+    if (vcf_nodes > 0) {
+      // Forced-line prover first: take an immediate five, then play the
+      // start of a proven VCF chain. Only when neither exists do we pay
+      // MCTS.
+      std::vector<int> fp;
+      az::VcfSolver::FivePoints(game.board(), game.current_player(), fp);
+      if (!fp.empty()) return fp[0];
+      const int kill = vcf.FindWinningMove(game.board(),
+                                           game.current_player(), 200000);
+      if (kill >= 0 && !vcf.undecided()) return kill;
+    }
+    if (vct_nodes > 0) {
+      // VCT-lite root probe: includes live-three forcing chains.
+      vcf.set_enable_threes(true);
+      const int kill = vcf.FindWinningMove(game.board(),
+                                           game.current_player(), vct_nodes);
+      vcf.set_enable_threes(false);
+      if (kill >= 0 && !vcf.undecided()) return kill;
+    }
     search.Search(game, mcts, evaluator, rng, visit_action, visit_count);
     az::Mcts::VisitDistribution(visit_action, visit_count, pi.data());
     const int action = static_cast<int>(std::max_element(pi.begin(), pi.end()) -

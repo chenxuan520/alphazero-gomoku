@@ -1,6 +1,7 @@
 // Minimal test harness: CHECK records failures and keeps going.
 
 #include "game/gomoku.h"
+#include "game/vcf.h"
 #include "mcts/mcts.h"
 #include "train/evaluator.h"
 #include "train/model_expand.h"
@@ -1269,6 +1270,217 @@ void TestBatchNormFixedStatisticsBackward() {
 
 } // namespace
 
+// ------------------------- VCF solver tests -------------------------
+
+namespace {
+
+using az::Gomoku;
+using az::VcfSolver;
+
+// Builds a raw board from 15 strings of length 15: '.' empty, 'X' black,
+// 'O' white.
+std::array<int8_t, Gomoku::kCellNum> ParseBoard(
+    std::initializer_list<const char *> rows) {
+  std::array<int8_t, Gomoku::kCellNum> board{};
+  int r = 0;
+  for (const char *row : rows) {
+    for (int c = 0; c < Gomoku::kBoardSize && row[c] != '\0'; ++c) {
+      if (row[c] == 'X') board[r * Gomoku::kBoardSize + c] = Gomoku::kBlack;
+      if (row[c] == 'O') board[r * Gomoku::kBoardSize + c] = Gomoku::kWhite;
+    }
+    ++r;
+  }
+  return board;
+}
+
+void TestVcfImmediateFivePoint() {
+  // Black already has XXXX on row 7 (cols 3-6): both ends are five-points.
+  auto b = ParseBoard({"...............",
+                       "...............",
+                       "...............",
+                       "...O...........",  // white decoy
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...XXXX........",
+                       "...............",
+                       "..............O",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "..............."});
+  VcfSolver solver;
+  CHECK(solver.Solve(b, Gomoku::kBlack, 100000));
+  int mv = solver.FindWinningMove(b, Gomoku::kBlack, 100000);
+  CHECK(mv == A(7, 2) || mv == A(7, 7));
+  // White (no threats) must not be proven to win.
+  CHECK(!solver.Solve(b, Gomoku::kWhite, 100000));
+  CHECK(!solver.undecided());
+}
+
+void TestVcfOpenFourIsWin() {
+  // Black XXX (7,5..7): making the open four next creates TWO five-points;
+  // one defense cannot cover both.
+  auto b = ParseBoard({"...............",
+                       "...............",
+                       "..O............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       ".....XXX.......",
+                       "...............",
+                       "...............",
+                       "...........O...",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "..............."});
+  VcfSolver solver;
+  CHECK(solver.Solve(b, Gomoku::kBlack, 200000));
+  int mv = solver.FindWinningMove(b, Gomoku::kBlack, 200000);
+  CHECK(mv == A(7, 4) || mv == A(7, 8));
+}
+
+void TestVcfNoThreatNoFalsePositive() {
+  // Fully blocked black three plus scattered stones: no forcing chain.
+  auto b = ParseBoard({"...............",
+                       "...............",
+                       "...............",
+                       ".......O.......",  // O at (3,7)
+                       ".....OXXXO.....",   // blocked both sides (row4 cols5-9)
+                       "...............",
+                       "...............",
+                       "...............",
+                       "..O.........O..",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "..............."});
+  VcfSolver solver;
+  CHECK(!solver.Solve(b, Gomoku::kBlack, 200000));
+  CHECK(!solver.undecided());
+}
+
+void TestVcfDefenseCounterFourBreaksChain() {
+  // Black's only starting threat points at a square where white's block
+  // simultaneously builds a white four (an immediate white five threat),
+  // breaking the forcing chain. No other black threats exist.
+  //
+  // Black: row 7 cols 5..7 (XXX), single-end four possible at (7,4).
+  // White: row 7 cols 1..3 (OOO), so blocking at (7,4) makes OOOO with an
+  // open five at (7,0).
+  auto b = ParseBoard({"...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       ".OOO.XXX.......",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "..............."});
+  VcfSolver solver;
+  CHECK(!solver.Solve(b, Gomoku::kBlack, 200000));
+  CHECK(!solver.undecided());
+}
+
+void TestVcfBudgetReportsUndecided() {
+  auto b = ParseBoard({"...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "....XXX........",
+                       "...............",
+                       "....X..........",
+                       "...............",
+                       "......O........",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "..............."});
+  VcfSolver solver;
+  CHECK(!solver.Solve(b, Gomoku::kBlack, 1)); // no budget
+  CHECK(solver.undecided());
+}
+
+void TestVcfGameIntegration() {
+  // Same open four through the real Gomoku container.
+  Gomoku game;
+  CHECK(PlayMoves(game, {A(7, 5), A(0, 0), A(7, 6), A(0, 1), A(7, 7),
+                         A(0, 2)}));
+  VcfSolver solver;
+  CHECK(solver.Solve(game.board(), Gomoku::kBlack, 200000));
+  int mv = solver.FindWinningMove(game.board(), Gomoku::kBlack, 200000);
+  CHECK(mv == A(7, 4) || mv == A(7, 8));
+  CHECK(game.Apply(mv)); // solver's root move must be legal in-game
+}
+
+void TestVctHelperAndModeToggle() {
+  // Isolated black pair (7,7)(7,8): both (7,6) and (7,9) create a live
+  // three (each end can still extend to a four).
+  auto b = ParseBoard({"...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       ".......XX......",
+                       "...............",
+                       "...............",
+                       "...........O...",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "..............."});
+  std::vector<int> threes;
+  VcfSolver::LiveThreeMoves(b, Gomoku::kBlack, threes);
+  CHECK(std::find(threes.begin(), threes.end(), A(7, 6)) != threes.end());
+  CHECK(std::find(threes.begin(), threes.end(), A(7, 9)) != threes.end());
+  // Pair alone cannot force anything — neither mode may claim a win.
+  VcfSolver solver;
+  CHECK(!solver.Solve(b, Gomoku::kBlack, 300000));
+  solver.set_enable_threes(true);
+  CHECK(!solver.Solve(b, Gomoku::kBlack, 300000));
+  CHECK(!solver.undecided());
+  // Four-in-a-row is still a loss for the useless side either way.
+}
+
+void TestVctThreesOnKeepsVcfSolves() {
+  // Open-four win must still be proven with threes enabled.
+  auto b = ParseBoard({"...............",
+                       "...............",
+                       "..O............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       ".....XXX.......",
+                       "...............",
+                       "...............",
+                       "...........O...",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "..............."});
+  VcfSolver solver;
+  solver.set_enable_threes(true);
+  CHECK(solver.Solve(b, Gomoku::kBlack, 300000));
+}
+
+} // namespace
+
 int main() {
   TestHorizontalWin();
   TestVerticalAndDiagonalWin();
@@ -1299,6 +1511,16 @@ int main() {
   TestFastTrainerRejectsInvalidConfigAndMismatchedBest();
   TestPolicyHeadOnlyTrainerFreezesTrunkValueAndBatchNorm();
   TestBatchNormFixedStatisticsBackward();
+
+  // ---- VCF solver ----
+  TestVcfImmediateFivePoint();
+  TestVcfOpenFourIsWin();
+  TestVcfNoThreatNoFalsePositive();
+  TestVcfDefenseCounterFourBreaksChain();
+  TestVcfBudgetReportsUndecided();
+  TestVcfGameIntegration();
+  TestVctHelperAndModeToggle();
+  TestVctThreesOnKeepsVcfSolves();
 
   std::printf("%d checks, %d failed\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

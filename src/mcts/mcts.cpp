@@ -66,6 +66,36 @@ float Mcts::ExpandNode(int node_index, Gomoku &game,
   return value;
 }
 
+bool Mcts::TryVcfValue(const Gomoku &game, float &value) {
+  const int mover = game.current_player();
+  const auto &board = game.board();
+  // Cheap immediate checks: an existing five-point ends the game next ply.
+  std::vector<int> fp;
+  VcfSolver::FivePoints(board, mover, fp);
+  if (!fp.empty()) {
+    value = 1.0f;
+    return true;
+  }
+  VcfSolver::FivePoints(board, -mover, fp);
+  if (!fp.empty()) {
+    value = -1.0f;
+    return true;
+  }
+  // Forcing-chain proofs with fixed budget. undecided() reflects the most
+  // recent Solve call, so it must be read immediately.
+  if (vcf_solver_.Solve(board, mover, vcf_leaf_nodes_)) {
+    value = 1.0f;
+    return true;
+  }
+  if (vcf_solver_.undecided()) return false;
+  if (vcf_solver_.Solve(board, -mover, vcf_leaf_nodes_)) {
+    value = -1.0f;
+    return true;
+  }
+  if (vcf_solver_.undecided()) return false;
+  return false;
+}
+
 void Mcts::ApplyRootNoise(int node_index, const MctsConfig &config,
                           std::mt19937 &rng) {
   Node &root = nodes_[node_index];
@@ -243,6 +273,7 @@ void Mcts::Search(const Gomoku &game, const MctsConfig &config,
     root_game_ = game;
   }
   fpu_reduction_ = config.fpu_reduction_;
+  vcf_leaf_nodes_ = config.vcf_leaf_nodes_;
   max_retained_nodes_ = config.max_retained_nodes_;
   max_retained_edges_ = config.max_retained_edges_;
   reuse_tree_active_ = config.reuse_tree_;
@@ -295,6 +326,9 @@ void Mcts::Search(const Gomoku &game, const MctsConfig &config,
     while (true) {
       if (work.IsTerminal()) {
         value = TerminalValue(work);
+        break;
+      }
+      if (vcf_leaf_nodes_ > 0 && TryVcfValue(work, value)) {
         break;
       }
       if (nodes_[node].edge_begin_ < 0) {
