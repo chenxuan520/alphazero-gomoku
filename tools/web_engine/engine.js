@@ -523,6 +523,24 @@
     const inheritedVisits = root.n;
     if (root.edges == null) expand(root, model, cloneState(rootState), session);
 
+    // VCF tactical completion (opt-in; options.vcf enables, leaf budget
+    // options.vcfLeafNodes, default 20000). Root kill: immediate five or the
+    // start of a proven forcing chain short-circuits the whole search.
+    const vcfBudget = options.vcf || 0;
+    const vcfLeafBudget = options.vcfLeafNodes || 20000;
+    const vcfSolver = vcfBudget > 0 ? vcfRootSolver : null;
+    if (vcfSolver) {
+      const fp = [];
+      vcfFivePoints(rootState.board, rootState.currentPlayer, fp);
+      if (fp.length) {
+        return { action: fp[0], visits: [], root, reused: started.reused, inheritedVisits };
+      }
+      const kill = vcfSolver.findWinningMove(rootState.board, rootState.currentPlayer, 200000);
+      if (kill >= 0 && !vcfSolver.undecided) {
+        return { action: kill, visits: [], root, reused: started.reused, inheritedVisits };
+      }
+    }
+
     for (let sim = 0; sim < simulations; sim++) {
       if ((session && session.cancelled(started.token, options.shouldStop)) ||
           (!session && options.shouldStop && options.shouldStop())) {
@@ -537,6 +555,19 @@
         if (state.result !== 0) {
           leafValue = terminalValue(state);
           break;
+        }
+        if (vcfSolver) {
+          const jf = [];
+          vcfFivePoints(state.board, state.currentPlayer, jf);
+          if (jf.length) { leafValue = 1; break; }
+          vcfFivePoints(state.board, -state.currentPlayer, jf);
+          if (jf.length) { leafValue = -1; break; }
+          if (vcfSolver.solve(state.board, state.currentPlayer, vcfLeafBudget) &&
+              !vcfSolver.undecided) { leafValue = 1; break; }
+          if (vcfSolver.undecided) { leafValue = undefined; }
+          else if (vcfSolver.solve(state.board, -state.currentPlayer, vcfLeafBudget) &&
+                   !vcfSolver.undecided) { leafValue = -1; break; }
+          if (leafValue !== undefined) break;
         }
         if (node.edges == null) {
           leafValue = expand(node, model, state, session);
@@ -815,6 +846,197 @@
     };
   }
 
+  // ---------- VCF (Victory by Continuous Four) prover ----------
+  // 1:1 port of src/game/vcf.cpp (one-sided forcing proof, attacker plays
+  // only moves creating an immediate five threat; defender must cover all
+  // five-points; defender's own five or counter-four refutes). Node budget
+  // with undecided semantics; board stays the Int8Array(225) game layout.
+  const vcfZobrist = (() => {
+    let s0 = 0x9E3779B9, s1 = 0x7F4A7C15; // fixed splitmix-style stream
+    const next = () => {
+      s1 = (s1 + 0x9E3779B9) >>> 0;
+      let z = s1;
+      z = Math.imul(z ^ (z >>> 16), 0x21F0AAAD) >>> 0;
+      z = Math.imul(z ^ (z >>> 15), 0x735A2D97) >>> 0;
+      z = (z ^ (z >>> 15)) >>> 0;
+      return z;
+    };
+    const hi = new Uint32Array(CELLS * 2), lo = new Uint32Array(CELLS * 2);
+    for (let i = 0; i < CELLS * 2; i++) { hi[i] = next(); lo[i] = next(); }
+    return { hi, lo };
+  })();
+  const VCF_DIRS = [[0, 1], [1, 0], [1, 1], [1, -1]];
+  const VCF_MAX_PLY = 64;
+
+  function vcfNearStones(board, radius, out) {
+    out.length = 0;
+    let any = false;
+    for (let i = 0; i < CELLS; i++) if (board[i] !== 0) { any = true; break; }
+    if (!any) { out.push((CELLS / 2) | 0); return; }
+    for (let r = 0; r < SIZE; r++) {
+      for (let c = 0; c < SIZE; c++) {
+        if (board[r * SIZE + c] !== 0) continue;
+        let near = false;
+        for (let dr = -radius; dr <= radius && !near; dr++) {
+          for (let dc = -radius; dc <= radius && !near; dc++) {
+            const nr = r + dr, nc = c + dc;
+            if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) continue;
+            near = board[nr * SIZE + nc] !== 0;
+          }
+        }
+        if (near) out.push(r * SIZE + c);
+      }
+    }
+  }
+
+  function vcfDirectionRun(board, row, col, dr, dc, color) {
+    let run = 1;
+    for (let s = 1; s < 5; s++) {
+      const nr = row + dr * s, nc = col + dc * s;
+      if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) break;
+      if (board[nr * SIZE + nc] !== color) break;
+      run++;
+    }
+    for (let s = 1; s < 5; s++) {
+      const nr = row - dr * s, nc = col - dc * s;
+      if (nr < 0 || nr >= SIZE || nc < 0 || nc >= SIZE) break;
+      if (board[nr * SIZE + nc] !== color) break;
+      run++;
+    }
+    return run;
+  }
+
+  function vcfFivePoints(board, color, out) {
+    out.length = 0;
+    const cand = [];
+    vcfNearStones(board, 1, cand);
+    for (const cell of cand) {
+      if (board[cell] !== 0) continue;
+      const row = (cell / SIZE) | 0, col = cell % SIZE;
+      for (const d of VCF_DIRS) {
+        if (vcfDirectionRun(board, row, col, d[0], d[1], color) >= 5) {
+          out.push(cell);
+          break;
+        }
+      }
+    }
+  }
+
+  class VcfSolverImpl {
+    constructor() {
+      this.b = new Int8Array(CELLS);
+      this.tt = new Map();
+      this.undecided = false;
+      this.nodes = 0;
+      this.rootMove = -1;
+      this.budget = 0;
+      this.h = 0; this.l = 0;
+    }
+    place(cell, color) {
+      this.b[cell] = color;
+      const o = 2 * cell + (color === 1 ? 0 : 1);
+      this.h ^= vcfZobrist.hi[o]; this.l ^= vcfZobrist.lo[o];
+    }
+    undo(cell, color) { this.place(cell, color); this.b[cell] = 0; }
+    winsAt(cell, color) {
+      const row = (cell / SIZE) | 0, col = cell % SIZE;
+      for (const d of VCF_DIRS)
+        if (vcfDirectionRun(this.b, row, col, d[0], d[1], color) >= 5) return true;
+      return false;
+    }
+    ttKey() { return this.h + "/" + this.l; }
+    threatMovesFor(color, out) {
+      out.length = 0;
+      const cand = [], fp = [];
+      vcfNearStones(this.b, 2, cand);
+      for (const cell of cand) {
+        if (this.b[cell] !== 0) continue;
+        this.b[cell] = color;
+        vcfFivePoints(this.b, color, fp);
+        if (fp.length) out.push(cell);
+        this.b[cell] = 0;
+      }
+    }
+    defenseFails(depth, fp) {
+      for (const block of fp) {
+        if (this.b[block] !== 0) continue;
+        if (this.undecided) return false;
+        this.place(block, this.def);
+        let ok;
+        if (this.winsAt(block, this.def)) {
+          ok = true; // defender completes own five
+        } else {
+          const df = [];
+          vcfFivePoints(this.b, this.def, df);
+          if (df.length) {
+            ok = true; // defender counter-four breaks the forcing chain
+          } else {
+            const nf = [];
+            vcfFivePoints(this.b, this.att, nf);
+            ok = nf.length ? false : !this.attackWin(depth + 1);
+          }
+        }
+        this.undo(block, this.def);
+        if (ok) return false;
+      }
+      return true;
+    }
+    attackWin(depth) {
+      if (depth > VCF_MAX_PLY) return false;
+      if (++this.nodes > this.budget) { this.undecided = true; return false; }
+      const key = this.ttKey();
+      const hit = this.tt.get(key);
+      if (hit !== undefined) return hit === 1;
+      const fp = [];
+      vcfFivePoints(this.b, this.att, fp);
+      if (fp.length) {
+        this.tt.set(key, 1);
+        if (depth === 0) this.rootMove = fp[0];
+        return true;
+      }
+      const threats = [];
+      this.threatMovesFor(this.att, threats);
+      let win = false;
+      for (const m of threats) {
+        this.place(m, this.att);
+        if (this.winsAt(m, this.att)) {
+          win = true;
+        } else {
+          const nf = [];
+          vcfFivePoints(this.b, this.att, nf);
+          win = nf.length && this.defenseFails(depth, nf);
+        }
+        if (win && depth === 0) this.rootMove = m;
+        this.undo(m, this.att);
+        if (win) break;
+      }
+      if (!this.undecided) this.tt.set(key, win ? 1 : 0);
+      return win;
+    }
+    solve(board, attColor, nodeBudget) {
+      this.b.set(board);
+      this.att = attColor; this.def = -attColor;
+      this.budget = nodeBudget;
+      this.undecided = false;
+      this.nodes = 0;
+      this.rootMove = -1;
+      this.h = 0; this.l = 0;
+      for (let i = 0; i < CELLS; i++) {
+        if (this.b[i] !== 0) {
+          const o = 2 * i + (this.b[i] === 1 ? 0 : 1);
+          this.h ^= vcfZobrist.hi[o]; this.l ^= vcfZobrist.lo[o];
+        }
+      }
+      this.tt.clear();
+      return this.attackWin(0);
+    }
+    findWinningMove(board, attColor, nodeBudget) {
+      return this.solve(board, attColor, nodeBudget) ? this.rootMove : -1;
+    }
+  }
+
+  const vcfRootSolver = new VcfSolverImpl();
+
   const api = {
     SIZE,
     CELLS,
@@ -828,6 +1050,8 @@
     search,
     SearchSession,
     searchPooled,
+    vcfFivePoints,
+    VcfSolver: VcfSolverImpl,
     createSearchPool,
     expandWithPolicy,
     createState(board, currentPlayer, lastAction = -1) {
