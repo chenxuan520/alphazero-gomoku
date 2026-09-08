@@ -524,11 +524,13 @@
     if (root.edges == null) expand(root, model, cloneState(rootState), session);
 
     // VCF tactical completion (opt-in; options.vcf enables, leaf budget
-    // options.vcfLeafNodes, default 20000). Root kill: immediate five or the
+    // options.vcfLeafNodes, default 2000). Root kill: immediate five or the
     // start of a proven forcing chain short-circuits the whole search.
     const vcfBudget = options.vcf || 0;
-    const vcfLeafBudget = options.vcfLeafNodes || 20000;
+    const vcfLeafBudget = options.vcfLeafNodes || 2000;
+    const vcfLeafOn = options.vcfLeaf === true; // leaf pinning is opt-in
     const vcfSolver = vcfBudget > 0 ? vcfRootSolver : null;
+    const vcfPins = { five: 0, win: 0, loss: 0, undecidedSkips: 0 };
     if (vcfSolver) {
       const fp = [];
       vcfFivePoints(rootState.board, rootState.currentPlayer, fp);
@@ -538,6 +540,15 @@
       const kill = vcfSolver.findWinningMove(rootState.board, rootState.currentPlayer, 200000);
       if (kill >= 0 && !vcfSolver.undecided) {
         return { action: kill, visits: [], root, reused: started.reused, inheritedVisits };
+      }
+      // 守方检查: 对面已有可证必杀链时, 先占其链条起点(否认启动格).
+      const danger = vcfSolver.findWinningMove(rootState.board, -rootState.currentPlayer, 200000);
+      if (danger >= 0 && !vcfSolver.undecided &&
+          rootState.board[danger] === 0 && root.edges) {
+        const edge = root.edges.find(e => e.action === danger);
+        if (edge) {
+          return { action: danger, visits: root.edges.map(e => ({ action: e.action, n: e.n, q: e.n ? e.w / e.n : 0, p: e.prior })), vcfPins, root, reused: started.reused, inheritedVisits };
+        }
       }
     }
 
@@ -556,18 +567,12 @@
           leafValue = terminalValue(state);
           break;
         }
-        if (vcfSolver) {
+        if (vcfSolver && vcfLeafOn) {
           const jf = [];
           vcfFivePoints(state.board, state.currentPlayer, jf);
-          if (jf.length) { leafValue = 1; break; }
+          if (jf.length) { vcfPins.five++; leafValue = 1; break; }
           vcfFivePoints(state.board, -state.currentPlayer, jf);
-          if (jf.length) { leafValue = -1; break; }
-          if (vcfSolver.solve(state.board, state.currentPlayer, vcfLeafBudget) &&
-              !vcfSolver.undecided) { leafValue = 1; break; }
-          if (vcfSolver.undecided) { leafValue = undefined; }
-          else if (vcfSolver.solve(state.board, -state.currentPlayer, vcfLeafBudget) &&
-                   !vcfSolver.undecided) { leafValue = -1; break; }
-          if (leafValue !== undefined) break;
+          if (jf.length >= 2) { vcfPins.loss++; leafValue = -1; break; }
         }
         if (node.edges == null) {
           leafValue = expand(node, model, state, session);
@@ -620,6 +625,7 @@
     return {
       action: best.action,
       visits: root.edges.map((edge) => ({ action: edge.action, n: edge.n, q: edge.n ? edge.w / edge.n : 0, p: edge.prior })),
+      vcfPins,
       root,
       reused: started.reused,
       inheritedVisits,

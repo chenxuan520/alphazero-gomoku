@@ -784,6 +784,8 @@ int CmdPiskvork(int argc, char **argv) {
   return 0;
 }
 
+int CmdVcfCheck();
+
 int main(int argc, char **argv) {
   if (argc < 2) {
     PrintUsage();
@@ -797,9 +799,42 @@ int main(int argc, char **argv) {
   if (command == "gauntlet") return CmdGauntlet(argc, argv);
   if (command == "play") return CmdPlay(argc, argv);
   if (command == "piskvork") return CmdPiskvork(argc, argv);
+  if (command == "vcfcheck") return CmdVcfCheck();
   if (command == "info") return CmdInfo();
   if (command == "expand") return CmdExpand(argc, argv);
   if (command == "serve") return CmdServe(argc, argv);
   PrintUsage();
   return 1;
+}
+
+// ---- vcfcheck: JSON-lines probe for cross-validating the browser VCF port.
+// stdin lines: JSON array of 225 ints (the board; +1 black, -1 white).
+// stdout per line: {"black":B,"white":W,"undB":uB,"undW":uW}
+int CmdVcfCheck(); // fwd
+
+
+int CmdVcfCheck() {
+  az::VcfSolver solver;
+  std::string line;
+  std::array<int8_t, Gomoku::kCellNum> board{};
+  while (std::getline(std::cin, line)) {
+    int vals[Gomoku::kCellNum] = {};
+    int n = 0;
+    for (const char *p = line.c_str(); *p && n < Gomoku::kCellNum; ++p) {
+      if (*p == '-' || (*p >= '0' && *p <= '9')) {
+        vals[n++] = std::atoi(p);
+        while ((*p >= '0' && *p <= '9') || (*p == '-' && p[1] >= '0' && p[1] <= '9')) ++p;
+        --p;
+      }
+    }
+    for (int i = 0; i < Gomoku::kCellNum; ++i) board[i] = (int8_t)vals[i];
+    bool b = solver.Solve(board, Gomoku::kBlack, 20000);
+    bool undB = solver.undecided();
+    bool w = solver.Solve(board, Gomoku::kWhite, 20000);
+    bool undW = solver.undecided();
+    std::printf("{\"black\":%d,\"white\":%d,\"undB\":%d,\"undW\":%d}\n",
+                b ? 1 : 0, w ? 1 : 0, undB ? 1 : 0, undW ? 1 : 0);
+    std::fflush(stdout);
+  }
+  return 0;
 }
