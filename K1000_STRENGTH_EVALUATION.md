@@ -252,3 +252,5 @@ python3 tools/crossmatch.py \
   --away 'rapfi|<rapfi-binary>|turnms=1500' \
   --games 24 --workers 6 --seed 2026 --out runtime_v2/cross2/repro.jsonl
 ```
+
+**内组警戒**：VCF 层对同族引擎无效增益——同一份 best80 权重下，96 sims + VCF 根杀/守备 vs 48 sims 纯组 40 局 = 20:20:0（双色轮换）。外界引擎靠 bolt「没看到链」的视角差赏饭吃；本家当事同模型，双方信息共享、信息盲区对称。不要把对外增益错写成对攀登梯度。
