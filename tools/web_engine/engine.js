@@ -535,21 +535,13 @@
       const fp = [];
       vcfFivePoints(rootState.board, rootState.currentPlayer, fp);
       if (fp.length) {
-        return { action: fp[0], visits: [], root, reused: started.reused, inheritedVisits };
+        return { action: fp[0], visits: [], forcedWin: true, root, reused: started.reused, inheritedVisits };
       }
       const kill = vcfSolver.findWinningMove(rootState.board, rootState.currentPlayer, 200000);
       if (kill >= 0 && !vcfSolver.undecided) {
-        return { action: kill, visits: [], root, reused: started.reused, inheritedVisits };
+        return { action: kill, visits: [], forcedWin: true, root, reused: started.reused, inheritedVisits };
       }
-      // 守方检查: 对面已有可证必杀链时, 先占其链条起点(否认启动格).
-      const danger = vcfSolver.findWinningMove(rootState.board, -rootState.currentPlayer, 200000);
-      if (danger >= 0 && !vcfSolver.undecided &&
-          rootState.board[danger] === 0 && root.edges) {
-        const edge = root.edges.find(e => e.action === danger);
-        if (edge) {
-          return { action: danger, visits: root.edges.map(e => ({ action: e.action, n: e.n, q: e.n ? e.w / e.n : 0, p: e.prior })), vcfPins, root, reused: started.reused, inheritedVisits };
-        }
-      }
+      // 守备策略放到"搜索后过滤"(下方最优选项前过滤): 不再占领对方链条起点.
     }
 
     for (let sim = 0; sim < simulations; sim++) {
@@ -622,9 +614,24 @@
     assert(root.edges && root.edges.length, "search root has no candidate moves");
     let best = root.edges[0];
     for (const edge of root.edges) if (edge.n > best.n) best = edge;
+    if (vcfSolver) {
+      // 守备过滤: 在访问最高的前 12 候选里挑第一个"我走后对面无证明链"的
+      const opp = -rootState.currentPlayer;
+      const cands = [...root.edges].sort((a, b) => b.n - a.n).slice(0, 12);
+      for (const e of cands) {
+        const next = cloneState(rootState);
+        if (next.board[e.action] !== 0 || !applyMove(next, e.action)) continue;
+        if (next.result !== 0) { best = e; break; }
+        const danger = vcfSolver.findWinningMove(next.board, opp, 200000);
+        if (danger >= 0 && !vcfSolver.undecided) continue;
+        best = e;
+        break;
+      }
+    }
     return {
       action: best.action,
       visits: root.edges.map((edge) => ({ action: edge.action, n: edge.n, q: edge.n ? edge.w / edge.n : 0, p: edge.prior })),
+      forcedWin: false,
       vcfPins,
       root,
       reused: started.reused,
@@ -1003,18 +1010,31 @@
       const threats = [];
       this.threatMovesFor(this.att, threats);
       let win = false;
+      let bestRootNodes = Infinity;
       for (const m of threats) {
         this.place(m, this.att);
+        const nodesBefore = this.nodes;
+        let branchWin;
         if (this.winsAt(m, this.att)) {
-          win = true;
+          branchWin = true;
         } else {
           const nf = [];
           vcfFivePoints(this.b, this.att, nf);
-          win = nf.length && this.defenseFails(depth, nf);
+          branchWin = nf.length && this.defenseFails(depth, nf);
         }
-        if (win && depth === 0) this.rootMove = m;
+        const branchCost = this.nodes - nodesBefore;
+        if (branchWin) {
+          win = true;
+          // 根上(深度 0): 不 breaker, 枚举全部杀路, 取证明代价最小(链最短)的那条
+          if (depth === 0 && branchCost < bestRootNodes) {
+            bestRootNodes = branchCost;
+            this.rootMove = m;
+          } else if (depth > 0) {
+            this.undo(m, this.att);
+            break; // 深处保持首证即剪的传统
+          }
+        }
         this.undo(m, this.att);
-        if (win) break;
       }
       if (!this.undecided) this.tt.set(key, win ? 1 : 0);
       return win;
