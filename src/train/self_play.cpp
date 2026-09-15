@@ -41,14 +41,15 @@ bool GameFromSample(const Sample &sample, Gomoku &game) {
 }
 
 // Plays a single self-play game; appends samples (with final z values) to the
-// buffer. Returns the move count.
+// buffer. Returns the move count; `game_result` receives the Gomoku result code.
 int PlaySelfPlayGame(INetEvaluator &evaluator, EvalCache *cache,
                        INetEvaluator *teacher_evaluator, EvalCache *teacher_cache,
-                      const SelfPlayConfig &config, ReplayBuffer &buffer,
-                      const ReplayBuffer *seed_source, std::mt19937 &rng,
-                      std::mt19937 &teacher_rng, int &teacher_target_count,
-                      int &sample_count) {
+                       const SelfPlayConfig &config, ReplayBuffer &buffer,
+                       const ReplayBuffer *seed_source, std::mt19937 &rng,
+                       std::mt19937 &teacher_rng, int &teacher_target_count,
+                       int &sample_count, int &game_result) {
   Mcts mcts;
+
   CachedEvaluator cached(&evaluator, cache);
   INetEvaluator *used = cache != nullptr
                             ? static_cast<INetEvaluator *>(&cached)
@@ -137,6 +138,7 @@ int PlaySelfPlayGame(INetEvaluator &evaluator, EvalCache *cache,
   }
 
   const int result = game.IsTerminal() ? game.Result() : 2; // cap -> draw
+  game_result = result;
   const int winner = (result == 2) ? 0 : result;
   for (std::size_t i = 0; i < history.size(); ++i) {
     history[i].value =
@@ -234,12 +236,20 @@ SelfPlayStats RunSelfPlay(deeplearning::PolicyValueResNet &master,
       }
       int teacher_targets = 0;
       int generated_samples = 0;
+      int game_result = 0;
       const int moves = PlaySelfPlayGame(
           *evaluator_ptr, cache_ptr, teacher_ptr, teacher_cache_ptr, config,
           buffer, &buffer, rng, teacher_rng, teacher_targets,
-          generated_samples);
+          generated_samples, game_result);
       std::lock_guard<std::mutex> lock(stats_mutex);
       ++stats.games;
+      if (game_result == 2) {
+        ++stats.draws;
+      } else if (game_result == Gomoku::kBlack) {
+        ++stats.black_wins;
+      } else if (game_result == Gomoku::kWhite) {
+        ++stats.white_wins;
+      }
       stats.moves_total += moves;
       stats.samples += static_cast<std::size_t>(generated_samples);
       stats.teacher_policy_targets +=

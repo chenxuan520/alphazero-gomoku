@@ -810,6 +810,7 @@ void Trainer::Run() {
     const double avg_moves =
         sp.games > 0 ? sp.moves_total / sp.games : 0.0;
     WriteLog("{\"iter\":%d,\"phase\":\"selfplay_done\",\"games\":%d,"
+              "\"black_wins\":%d,\"white_wins\":%d,\"draws\":%d,"
               "\"avg_moves\":%.1f,\"cache_size\":%.0f,"
                "\"cache_hit_rate\":%.3f,\"buffer\":%zu,"
                 "\"student_targets\":%zu,\"teacher_targets\":%zu,"
@@ -817,7 +818,9 @@ void Trainer::Run() {
                 "\"inference_max_batch\":%d,"
                 "\"inference_avg_wait_us\":%.1f,"
                 "\"elapsed_sec\":%.3f}",
-               iteration_, sp.games, avg_moves, sp.eval_cache_size,
+                iteration_, sp.games, sp.black_wins, sp.white_wins, sp.draws,
+                avg_moves, sp.eval_cache_size,
+
                sp.eval_cache_hit_rate, buffer_.Size(),
                sp.student_policy_targets, sp.teacher_policy_targets,
                 sp.inference_forward_calls, sp.inference_average_batch,
