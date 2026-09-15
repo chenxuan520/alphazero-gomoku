@@ -99,8 +99,10 @@ class PiskvorkSide:
         while True:
             ln = self.readline()
             up = ln.upper()
-            if up.startswith(("MESSAGE", "INFO", "DEBUG", "ERROR", "UNKNOWN")):
+            if up.startswith(("MESSAGE", "INFO", "DEBUG")):
                 continue
+            if up.startswith(("ERROR", "UNKNOWN")):
+                raise RuntimeError(f"{self.name}: {ln}")
             if "," in ln:
                 x, y = ln.split(",")[:2]
                 return int(x), int(y)

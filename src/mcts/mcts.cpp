@@ -328,7 +328,7 @@ void Mcts::Search(const Gomoku &game, const MctsConfig &config,
         value = TerminalValue(work);
         break;
       }
-      if (vcf_leaf_nodes_ > 0 && TryVcfValue(work, value)) {
+      if (vcf_leaf_nodes_ > 0 && node != root_ && TryVcfValue(work, value)) {
         break;
       }
       if (nodes_[node].edge_begin_ < 0) {

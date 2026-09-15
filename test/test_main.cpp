@@ -304,6 +304,35 @@ void TestMctsForcedWin() {
   CHECK(best == A(7, 2) || best == A(7, 7));
 }
 
+void TestMctsVcfRootNeverPinned() {
+  using az::Gomoku;
+  // Regression from the VCF cross-match archive: white has a proven VCF here,
+  // but it is black to move. Pinning this value at the search root used to
+  // leave every root candidate at zero visits, and the piskvork adapter then
+  // selected cell 0 until it became illegal.
+  Gomoku game;
+  CHECK(PlayMoves(game,
+                  {A(7, 8), A(9, 9), A(7, 7), A(10, 8), A(7, 6), A(7, 9),
+                   A(7, 5), A(7, 4), A(6, 6), A(10, 9), A(0, 0), A(9, 8)}));
+  CHECK(!game.IsTerminal());
+  CHECK(game.current_player() == Gomoku::kBlack);
+  az::VcfSolver solver;
+  CHECK(solver.Solve(game.board(), Gomoku::kWhite, 20000));
+
+  FlatEvaluator evaluator;
+  az::MctsConfig config;
+  config.simulation_num_ = 16;
+  config.dirichlet_epsilon_ = 0.0f;
+  config.vcf_leaf_nodes_ = 100;
+  az::Mcts mcts;
+  std::mt19937 rng(17);
+  std::vector<int> visit_action, visit_count;
+  mcts.Search(game, config, evaluator, rng, visit_action, visit_count);
+  int total_visits = 0;
+  for (int count : visit_count) total_visits += count;
+  CHECK(total_visits == config.simulation_num_);
+}
+
 void TestVisitDistribution() {
   using az::Gomoku;
   Gomoku game;
@@ -1490,6 +1519,7 @@ int main() {
   TestEvalCacheIncludesLastMove();
   TestSymmetryConsistency();
   TestMctsForcedWin();
+  TestMctsVcfRootNeverPinned();
   TestVisitDistribution();
   TestMctsTreeReuse();
   TestMctsReuseDisabledByDefault();
