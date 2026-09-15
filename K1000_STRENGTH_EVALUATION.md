@@ -215,42 +215,32 @@ BT 三角收敛: L7 +25 / L4 +15 / L6 -65 (相对 Elo, 三者全部落在统计�
 
 量级对照: AlphaZero 围棋论文约 440 万局自对弈。 本模型用其约 1% 的对局量摸到自由五子棋"2018 引擎带"水位， 差距靠这三个信息效率杠杆： 开局候选半径剪枝、 hard mining/残局做种、 训练期 1000-sims 的高质量 π 标签。
 
-## 11. 附录: VCF 战术完成层实测 (2026-09-04)
+## 11. 附录: VCF 战术完成层（2026-09-15 复核：原结论已作废）
 
-§6.4 廉价切入点的第一条（"战术完成层挂进搜索"）已实施并定量。
+本节原先宣称 “512 sims + VCF 追平 Rapfi@1500ms ≈2716 附近”。2026-09-15 复核为「作废」：
 
-**实现口径**（`src/game/vcf.{h,cpp}`，`--vcf` 探针）：
-单边 VCF 证明器。攻击方只走"制造立即五连威胁"的着法（冲四/活四），守方合法集 = 覆盖全部五点（含守方立即成五/反造四即破链裁决），DFS + Zobrist 换位表 + 节点预算 + `undecided` 语义（预算用尽与证伪严格区分，绝不谎报必胜）。接入两处：出招根（证出必杀链直接落子，budget 200k）+ MCTS 叶子（值钉 ±1，叶预算 20k/100k 档）。训练与默认评估路径零侵入（默认关，含 8 组单元测试，详见 `test/test_main.cpp` 的 VCF/VCT 段）。
+1. 存档完整性问题：`runtime_v2/cross2/b80_*vcf*.jsonl` （2026-09-04 系列）里 **93/96 局是 `result=-99`（move timeout）**，其中与 `48/96 平手` 对应的前身证据几乎都是错误局；之前把这些局按胜负混进来了。
+2. 代码 bug：`Mcts::TryVcfValue` 只准在**非根节点**上起钉值；旧代码把根节点也钉死，导致防守该 VCF 的一方始终 0 次访问 → `piskvork` 只能回 `ERROR no legal move`。修正后训练/评测两条路径都不再这个误报（见 `src/mcts/mcts.cpp`, `test/test_main.cpp` 的 `TestMctsVcfRootNeverPinned`, `tools/crossmatch.py` 把 `ERROR/UNKNOWN` 快速落盘而不是 600s 死等）。
+3. 真正重测口径（修复后的 piskvork + Rapfi@500/1500ms, 双色轮换, seed=3214/9187）：
 
-**对 Rapfi 的实测**（规则照旧：双色轮换、referee 2 手开局种子，存档 `runtime_v2/cross2/b80_*vcf*.jsonl`）：
+| 我方配置 | Rapfi 档 | 战绩 |
+|---|---|---:|
+| best80 @48 + VCF(20k) | 500ms | 0/24 |
+| best80 @48 + VCF(20k) | 1500ms | 2/24 |
+| best80 @96 + VCF(20k) | 500ms | 0/24 |
+| best80 @96 + VCF(20k) | 1500ms | 0/24 |
+| best80 @512 + VCF(20k, 修复后) | 500ms | 0/48 |
 
-| 我方配置 | Rapfi 档 | 战绩 | 局数 |
-|---|---|---:|---:|
-| best80 @512（无 VCF，历史对照） | 500ms | 15.6%/25.0% | 32+24 |
-| best80 @512 + VCF(20k) | 500ms | **50.0%** | 24 |
-| best80 @512 + VCF(100k) | 500ms | **50.0%** | 24 |
-| best80 @512（无 VCF，历史对照） | 1500ms | 9.4%/16.7% | 32+24 |
-| best80 @512 + VCF(20k) | 1500ms | **50.0%** | 24 |
-| best80 @512 + VCF(20k) 大样本 | 1500ms | **50.0%(36/36)** | 72 |
-| best80 @512 + VCF(20k) + VCT-lite | 1500ms | 45.8% | 24 |
+**结论**：在 **C++/piskvork 这条链路** 上，Tactical completion layer 没把我们带回「与 Rapfi 同档」；那只能回答“VCF 有无”，不能答“在浏览器前端和绝艺（JS 引擎）那种带守备过滤的融合路径是否更强，后者目前是另一条单独未测路线”。§2 与 §4 关于“纯 best80 vs Rapfi 差距” 与 “2000-sims 饱和” 的结论不受影响。
 
-合并口径：**512 sims + VCF vs Rapfi@1500ms = 48/96 = 50.0%**（95% Wilson 下界 ≈ 40.4%——"平手"严格成立，"超越"尚不显著）。
+## 12. 附录: value head 校准核查 (2026-09-15)
 
-**Elo 读法**：按 §0 锚定（Rapfi@1500ms=2716，时间平台不显著），best80+VCF 的点估计抬入"与 Rapfi@1500ms 等强带"（≈2716 ±100 与本机硬件差异未定）。"AZ-lite 通用路线"在接入一个 300 行级战术层后追平了领域特化引擎。
+现在这个模型的 `value` 输出可以画看得见的一个图，但**不能当真代表「胜率」**。它是搜索树的引导变量，不是校准过的概率棋标。
 
-**负结果一并存档（防再踩）**：
-- VCT-lite（活三链）默认关闭：防务推断不全的威胁空间搜索会**过度自信报假赢**（守方的反VCF/造三反压迫等招式不在 lite 枚举内），实测 -4pp，不如纯 VCF。真 VCT 需要 Rapfi 同级的完整 TSS 工程，量级不同；
-- 2000 sims（无 VCF）vs Rapfi@500ms = 20.8%：见 §2，与 512 sims 同带，**模拟量收益已饱和**。
+- 数据来源：`runtime_v2/cross2/b80_s{48,96,512}_r{500,1500}.jsonl` + `b80_2000_r500.jsonl`，共 168 局、4,310 个局面（每个走子前一次）。
+- 对齐方式：`az_model_probe` 对该局面 `value` → 令模型视角的预测分数 `(value+1)/2` → 跟该棋局真实 `z` 对齐。
+- 整体口径：**ECE ≈ 0.56, Brier ≈ 0.44**。这比「value 能稳态读成胜率」要远得多，所以网页展示的 `模型估值` 就叫估值，不叫胜率。
+- 细粒读法：大多数局面 value 介于 0.1–0.9，但真实终局和预估之间只有弱相关；把 value /driver 直接当成 calibrator 是错的。
+- 代码入口：`tools/value_calibration.py`（可复跑）；训练侧的黑白/和棋统计也开始在 `selfplay_done` 里记录，见 `src/train/self_play.cpp` + `src/train/trainer.cpp`。
 
-**部署**：生产通道（fast/stable/deep）与浏览器资产均未变更；本成果目前只走 piskvork 命令行协议入口（`--vcf` 默认 0 关闭）。
-
-**复现**：
-```bash
-./bin/alphazero piskvork --model runtime_v2/candidates/k1000-best80-19ea8c34.net --sims 512 --threads 1 --vcf 20000
-python3 tools/crossmatch.py \
-  --home 'az|runtime_v2/candidates/k1000-best80-19ea8c34.net|sims=512|vcf=20000|threads=1' \
-  --away 'rapfi|<rapfi-binary>|turnms=1500' \
-  --games 24 --workers 6 --seed 2026 --out runtime_v2/cross2/repro.jsonl
-```
-
-**内组警戒**：VCF 层对同族引擎无效增益——同一份 best80 权重下，96 sims + VCF 根杀/守备 vs 48 sims 纯组 40 局 = 20:20:0（双色轮换）。外界引擎靠 bolt「没看到链」的视角差赏饭吃；本家当事同模型，双方信息共享、信息盲区对称。不要把对外增益错写成对攀登梯度。
+因此，之后再讨论「模型看到的胜率」时，只能直接用词面数值当“非校准估值”，不能拿它去对齐 Elo 或硬卡概率节拍。
