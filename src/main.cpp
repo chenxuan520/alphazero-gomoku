@@ -20,6 +20,7 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <thread>
 #include <vector>
@@ -708,8 +709,22 @@ int CmdPiskvork(int argc, char **argv) {
     }
     search.Search(game, mcts, evaluator, rng, visit_action, visit_count);
     az::Mcts::VisitDistribution(visit_action, visit_count, pi.data());
-    const int action = static_cast<int>(std::max_element(pi.begin(), pi.end()) -
-                                        pi.begin());
+    int action = static_cast<int>(std::max_element(pi.begin(), pi.end()) -
+                                  pi.begin());
+    if (vcf_nodes > 0 && !visit_action.empty()) {
+      // Browser-Jueyi parity: among the strongest root candidates, prefer the
+      // first that does not concede the opponent a proven VCF reply.
+      std::vector<int> order(visit_action.size());
+      std::iota(order.begin(), order.end(), 0);
+      std::sort(order.begin(), order.end(), [&](int a, int b) {
+        return visit_count[a] > visit_count[b];
+      });
+      std::vector<int> top;
+      for (std::size_t i = 0; i < order.size() && top.size() < 12; ++i)
+        top.push_back(visit_action[order[i]]);
+      const int safe = az::VcfSolver::FilterSafety(game, top, vcf, 200000);
+      if (safe >= 0) action = safe;
+    }
     if (!game.IsLegal(action)) return -1;
     return action;
   };

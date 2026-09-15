@@ -59,6 +59,14 @@ public:
   static void LiveThreeMoves(const std::array<int8_t, kBoardCells> &board,
                              int color, std::vector<int> &out);
 
+  // Root defensive filter (piskvork --vcf): given root candidates in engine
+  // preference order, return the first legal one that does NOT concede the
+  // opponent a proven VCF on the reply. Immediately terminal candidates are
+  // kept. Returns -1 when every candidate concedes; callers keep the MCTS
+  // argmax in that case.
+  static int FilterSafety(const Gomoku &game, const std::vector<int> &candidates,
+                          VcfSolver &solver, int node_budget);
+
 private:
   enum class NodeState : int8_t { kFail = 0, kWin = 1 };
 

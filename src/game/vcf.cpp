@@ -357,6 +357,21 @@ int VcfSolver::FindWinningMove(const std::array<int8_t, kBoardCells> &board,
   return Solve(board, att_color, node_budget) ? root_move_ : -1;
 }
 
+int VcfSolver::FilterSafety(const Gomoku &game,
+                            const std::vector<int> &candidates,
+                            VcfSolver &solver, int node_budget) {
+  for (int action : candidates) {
+    if (!game.IsLegal(action)) continue;
+    Gomoku next = game;
+    if (!next.Apply(action)) continue;
+    if (next.IsTerminal()) return action; // immediate win/draw-cap: keep it
+    const int danger =
+        solver.FindWinningMove(next.board(), next.current_player(), node_budget);
+    if (danger < 0 || solver.undecided()) return action;
+  }
+  return -1;
+}
+
 bool VcfSolver::Place(int cell, int color) {
   b_[cell] = static_cast<int8_t>(color);
   hash_ ^= zobrist_[2 * cell + (color == Gomoku::kBlack ? 0 : 1)];

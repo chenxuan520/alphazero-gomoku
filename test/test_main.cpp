@@ -1508,6 +1508,38 @@ void TestVctThreesOnKeepsVcfSolves() {
   CHECK(solver.Solve(b, Gomoku::kBlack, 300000));
 }
 
+void TestVcfRootDefenseFilter() {
+  using az::Gomoku;
+  // White has OOOO at row 7 cols 3..6, black to move: junk root moves concede
+  // a proven white five next; the only safe candidates are the two blocks.
+  // White has a CLOSED four at row 7 cols 2..5 (left end sealed by the black
+  // blocker at (7,1)): the only five-point is (7,6). One-sided: white's VCF
+  // already holds (the four's five-threat forces a reply in the proof tree);
+  // the filter must keep only the blocking candidate.
+  Gomoku game;
+  CHECK(PlayMoves(game, {A(7, 1), A(7, 2), A(0, 0), A(7, 3), A(0, 1), A(7, 4),
+                         A(0, 2), A(7, 5)}));
+  CHECK(!game.IsTerminal());
+  CHECK(game.current_player() == Gomoku::kBlack);
+  VcfSolver solver;
+  CHECK(solver.Solve(game.board(), Gomoku::kWhite, 100000)); // white four wins
+
+  const int safe = VcfSolver::FilterSafety(
+      game, {A(1, 1), A(7, 6)}, solver, 20000);
+  CHECK(safe == A(7, 6));
+
+  // If every candidate concedes the proven reply, the caller must keep its
+  // own ranking (signal is -1), not silently invent a move.
+  CHECK(VcfSolver::FilterSafety(game, {A(1, 1)}, solver, 20000) == -1);
+
+  // An immediately terminal candidate (our own win) is always kept.
+  Gomoku winning;
+  CHECK(PlayMoves(winning, {A(6, 3), A(7, 0), A(6, 4), A(7, 1), A(6, 5),
+                            A(7, 2), A(6, 6), A(7, 3)}));
+  CHECK(VcfSolver::FilterSafety(winning, {A(1, 1), A(6, 7)}, solver,
+                                20000) == A(6, 7));
+}
+
 } // namespace
 
 int main() {
@@ -1551,6 +1583,7 @@ int main() {
   TestVcfGameIntegration();
   TestVctHelperAndModeToggle();
   TestVctThreesOnKeepsVcfSolves();
+  TestVcfRootDefenseFilter();
 
   std::printf("%d checks, %d failed\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
