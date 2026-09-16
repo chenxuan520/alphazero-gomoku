@@ -232,7 +232,9 @@ BT 三角收敛: L7 +25 / L4 +15 / L6 -65 (相对 Elo, 三者全部落在统计�
 | best80 @512 + VCF(20k, 修复后) | 500ms | 0/48 |
 | best80 @512 + VCF + 根防守过滤(20k) | 500ms | 1/48 (2026-09-15 防守过滤版)
 | best80 @512 + VCF + 根 VCT 探针(500k) | 500ms | 0/24（修复后链路的重测口径） |
-| best80 @512 + VCF + 根 VCT(500k, 扩展防守) | 500ms | 0/24
+| best80 @512 + VCF + 根 VCT(500k, 扩展防守) | 500ms | 0/24 |
+| best80 @512 + VCF + VCT hub-killer 着(200k) | 500ms | 0/24（killer 证明本身 ~130ms 正确工作） |
+| best80 @96 + VCF + VCT hub-killer(200k) | 500ms | 0/24 |
 
 **结论**：在 **C++/piskvork 这条链路** 上，Tactical completion layer 没把我们带回「与 Rapfi 同档」；那只能回答“VCF 有无”，不能答“在浏览器前端和绝艺（JS 引擎）那种带守备过滤的融合路径是否更强，后者目前是另一条单独未测路线”。§2 与 §4 关于“纯 best80 vs Rapfi 差距” 与 “2000-sims 饱和” 的结论不受影响。
 
