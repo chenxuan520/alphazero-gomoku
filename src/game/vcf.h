@@ -46,6 +46,9 @@ public:
   // countering with an own four. Still one-sided: proves attacker forcing
   // wins only. Heavier than pure VCF; intended for root probes.
   void set_enable_threes(bool on) { enable_threes_ = on; }
+  // Opt-in: make three-threatening defenses complete within the threat zone
+  // (slower, eliminates the known false-positive hole).
+  void set_extended_three_defense(bool on) { extended_three_defense_ = on; }
 
   // --- static pattern helpers (exposed for testing / MCTS leaf gating) ---
   // Empty cells where placing `color` completes five-or-more.
@@ -74,9 +77,10 @@ private:
   // Assumes attacker stone just placed at `move` having five-points `fp`;
   // tries every defense. Returns true iff attack still wins.
   bool DefenseFails(int depth, const std::vector<int> &fp);
-  // Defense replies to a live-three move at `cell`: cover both of the three's
-  // four-squares, or counter with an own four. Returns true iff attack wins.
-  bool DefenseFailsThree(int depth, const std::vector<int> &covers);
+  // Defense replies to a live-three move at `move`: cover the three's
+  // four-squares, counter with an own four/five, or (when the extended
+  // defense zone is enabled) any empty cell near the attacker's move.
+  bool DefenseFailsThree(int depth, int move, const std::vector<int> &covers);
   // Cells where placing attc creates at least one five-point.
   void ThreatMoves(std::vector<int> &out);
   void ThreatMovesFor(int color, std::vector<int> &out);
@@ -99,6 +103,10 @@ private:
   int iter_budget_used_ = 0;
   bool undecided_ = false;
   bool enable_threes_ = false;
+  // VCT completeness toggle: when on, three-defense also enumerates every
+  // empty cell near the attacker's move (interference/counter-play), killing
+  // the false-positive windows of the lite enumeration at some node cost.
+  bool extended_three_defense_ = false;
   uint64_t nodes_ = 0;
   int root_move_ = -1;
   std::array<uint64_t, kBoardCells * 2> zobrist_{}; // [cell][black?0:1]

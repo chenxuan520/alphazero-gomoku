@@ -1508,10 +1508,52 @@ void TestVctThreesOnKeepsVcfSolves() {
   CHECK(solver.Solve(b, Gomoku::kBlack, 300000));
 }
 
+void TestVctExtendedDefenseKeepsProofs() {
+  // The extended three-defense enumeration must not break either polarity:
+  // the open-four chain still proves, and the dead pair still fails.
+  auto open_four = ParseBoard({"...............",
+                               "...............",
+                               "..O............",
+                               "...............",
+                               "...............",
+                               "...............",
+                               "...............",
+                               ".....XXX.......",
+                               "...............",
+                               "...............",
+                               "...........O...",
+                               "...............",
+                               "...............",
+                               "...............",
+                               "..............."});
+  VcfSolver solver;
+  solver.set_enable_threes(true);
+  solver.set_extended_three_defense(true);
+  CHECK(solver.Solve(open_four, Gomoku::kBlack, 300000));
+  CHECK(!solver.undecided());
+
+  auto dead_pair = ParseBoard({"...............",
+                               "...............",
+                               "...............",
+                               "...............",
+                               "...............",
+                               "...............",
+                               "...............",
+                               ".......XX......",
+                               "...............",
+                               "...........O...",
+                               "...............",
+                               "...............",
+                               "...............",
+                               "...............",
+                               "..............."});
+  solver.set_enable_threes(true);
+  CHECK(!solver.Solve(dead_pair, Gomoku::kBlack, 300000));
+  CHECK(!solver.undecided());
+}
+
 void TestVcfRootDefenseFilter() {
   using az::Gomoku;
-  // White has OOOO at row 7 cols 3..6, black to move: junk root moves concede
-  // a proven white five next; the only safe candidates are the two blocks.
   // White has a CLOSED four at row 7 cols 2..5 (left end sealed by the black
   // blocker at (7,1)): the only five-point is (7,6). One-sided: white's VCF
   // already holds (the four's five-threat forces a reply in the proof tree);
@@ -1583,6 +1625,7 @@ int main() {
   TestVcfGameIntegration();
   TestVctHelperAndModeToggle();
   TestVctThreesOnKeepsVcfSolves();
+  TestVctExtendedDefenseKeepsProofs();
   TestVcfRootDefenseFilter();
 
   std::printf("%d checks, %d failed\n", g_checks, g_failures);

@@ -105,17 +105,34 @@ void VcfSolver::ThreatMovesFor(int color, std::vector<int> &out) {
 
 void VcfSolver::ThreatMoves(std::vector<int> &out) { ThreatMovesFor(att_, out); }
 
-// VCT-lite defense against a *live three* just played at cell `move` by the
+// VCT-lite defense against a *live three* just played at `move` by the
 // attacker: defender may cover any four-extension square of the three
 // (covers), or counter with a defender four (which forces the attacker to
 // answer next and breaks the forcing chain). The attack survives only if
-// every such reply still loses.
-bool VcfSolver::DefenseFailsThree(int depth, const std::vector<int> &covers) {
+// every such reply still loses. When extended_three_defense_ is on, every
+// empty cell in the Chebyshev-2 zone around the attacker's move is also tried:
+// interference/counter-play that is not strictly a cover then has to lose by
+// construction deeper in the tree, instead of being silently skipped.
+bool VcfSolver::DefenseFailsThree(int depth, int move,
+                                  const std::vector<int> &covers) {
   std::vector<int> cand = covers;
   // Defender's own four-creators are legitimate counter defenses.
   std::vector<int> counter_fours;
   ThreatMovesFor(def_, counter_fours);
   cand.insert(cand.end(), counter_fours.begin(), counter_fours.end());
+  if (extended_three_defense_) {
+    const int r = move / Gomoku::kBoardSize, c = move % Gomoku::kBoardSize;
+    for (int dr = -2; dr <= 2; ++dr) {
+      for (int dc = -2; dc <= 2; ++dc) {
+        const int nr = r + dr, nc = c + dc;
+        if (nr < 0 || nr >= Gomoku::kBoardSize ||
+            nc < 0 || nc >= Gomoku::kBoardSize)
+          continue;
+        const int idx = nr * Gomoku::kBoardSize + nc;
+        if (b_[idx] == 0) cand.push_back(idx);
+      }
+    }
+  }
   std::sort(cand.begin(), cand.end());
   cand.erase(std::unique(cand.begin(), cand.end()), cand.end());
   std::vector<int> fp;
@@ -324,7 +341,7 @@ bool VcfSolver::AttackWin(int depth) {
       }
       std::vector<int> covers;
       ExtendRunCovers(b_, m, att_, covers, 3);
-      win = !covers.empty() && DefenseFailsThree(depth, covers);
+      win = !covers.empty() && DefenseFailsThree(depth, m, covers);
       if (win && depth == 0) root_move_ = m;
       Undo(m, att_);
       if (win) break;

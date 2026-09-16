@@ -700,11 +700,15 @@ int CmdPiskvork(int argc, char **argv) {
       if (kill >= 0 && !vcf.undecided()) return kill;
     }
     if (vct_nodes > 0) {
-      // VCT-lite root probe: includes live-three forcing chains.
+      // VCT-lite root probe: includes live-three forcing chains. Extended
+      // three-defense is on for trust: it trades nodes for eliminating the
+      // known interference false-positive window.
       vcf.set_enable_threes(true);
+      vcf.set_extended_three_defense(true);
       const int kill = vcf.FindWinningMove(game.board(),
                                            game.current_player(), vct_nodes);
       vcf.set_enable_threes(false);
+      vcf.set_extended_three_defense(false);
       if (kill >= 0 && !vcf.undecided()) return kill;
     }
     search.Search(game, mcts, evaluator, rng, visit_action, visit_count);
