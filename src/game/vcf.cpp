@@ -192,26 +192,9 @@ RunInfo InspectRun(const std::array<int8_t, Gomoku::kCellNum> &board, int row,
   return info;
 }
 
-// Places `color` virtually at `cell` (already verified empty) and appends to
-// `covers` each end square that would extend a run to length >= 4.
-void ExtendRunCovers(std::array<int8_t, Gomoku::kCellNum> &board, int cell,
-                     int color, std::vector<int> &covers, int len_ge) {
-  constexpr int kB = Gomoku::kBoardSize;
-  static const int kDirs[4][2] = {{0, 1}, {1, 0}, {1, 1}, {1, -1}};
-  int row = cell / kB, col = cell % kB;
-  board[cell] = static_cast<int8_t>(color);
-  for (auto &d : kDirs) {
-    RunInfo info = InspectRun(board, row, col, d[0], d[1], color);
-    if (info.len_ >= len_ge) {
-      if (info.end_a_ >= 0) covers.push_back(info.end_a_);
-      if (info.end_b_ >= 0) covers.push_back(info.end_b_);
-    }
-  }
-  board[cell] = 0;
-}
-
-// Same as ExtendRunCovers but assumes the stone of `color` at `cell` was
-// already placed (does not place/undo it).
+// Assumes the stone of `color` at `cell` was PRE-PLACED (does not
+// place/undo it). Appends to `covers` each end square that would extend a
+// run to length >= len_ge. Never touches the running hash.
 void ExtendRunCoversPlaced(const std::array<int8_t, Gomoku::kCellNum> &board,
                            int cell, int color, std::vector<int> &covers,
                            int len_ge) {
@@ -255,6 +238,39 @@ void VcfSolver::LiveThreeMoves(
     }
     b[cell] = 0;
     if (live) out.push_back(cell);
+  }
+}
+
+void VcfSolver::HubKillerMoves(
+    const std::array<int8_t, kBoardCells> &board, int color,
+    std::vector<int> &out) {
+  out.clear();
+  std::vector<int> cand;
+  NearStones(board, 2, cand);
+  auto b = board;
+  static const int kDirs[4][2] = {{0, 1}, {1, 0}, {1, 1}, {1, -1}};
+  std::vector<int> four_pts;
+  for (int cell : cand) {
+    if (b[cell] != 0) continue;
+    const int row = cell / Gomoku::kBoardSize, col = cell % Gomoku::kBoardSize;
+    b[cell] = static_cast<int8_t>(color);
+    int live_dirs = 0;
+    for (auto &d : kDirs) {
+      RunInfo info = InspectRun(b, row, col, d[0], d[1], color);
+      if (info.len_ < 3) continue;
+      bool live = false;
+      for (int end : {info.end_a_, info.end_b_}) {
+        if (end < 0) continue;
+        b[end] = static_cast<int8_t>(color);
+        four_pts.clear();
+        ExtendRunCoversPlaced(b, end, color, four_pts, 4);
+        b[end] = 0;
+        if (!four_pts.empty()) { live = true; break; }
+      }
+      if (live) ++live_dirs;
+    }
+    b[cell] = 0;
+    if (live_dirs >= 2) out.push_back(cell);
   }
 }
 
@@ -327,7 +343,8 @@ bool VcfSolver::AttackWin(int depth) {
     if (win) break;
   }
   // VCT-lite: live-three creators (forcing chains through threes).
-  if (!win && enable_threes_) {
+  if (!win && enable_threes_ && enable_three_chaining_ &&
+      depth <= max_three_depth_) {
     std::vector<int> threes;
     LiveThreeMoves(b_, att_, threes);
     for (int m : threes) {
@@ -340,7 +357,24 @@ bool VcfSolver::AttackWin(int depth) {
         continue;
       }
       std::vector<int> covers;
-      ExtendRunCovers(b_, m, att_, covers, 3);
+      ExtendRunCoversPlaced(b_, m, att_, covers, 3);
+      win = !covers.empty() && DefenseFailsThree(depth, m, covers);
+      if (win && depth == 0) root_move_ = m;
+      Undo(m, att_);
+      if (win) break;
+    }
+  }
+  // VCT killer moves: one placement anchors >= 2 separate live-three lines
+  // (the hub). The defender must neutralize every branch by covering its
+  // four-extension squares; counter-fours/fives are handled inside the
+  // defense path. Usually impossible — the essence of VCT.
+  if (!win && enable_threes_ && depth <= max_three_depth_) {
+    std::vector<int> killers;
+    HubKillerMoves(b_, att_, killers);
+    for (int m : killers) {
+      Place(m, att_);
+      std::vector<int> covers;
+      ExtendRunCoversPlaced(b_, m, att_, covers, 3);
       win = !covers.empty() && DefenseFailsThree(depth, m, covers);
       if (win && depth == 0) root_move_ = m;
       Undo(m, att_);

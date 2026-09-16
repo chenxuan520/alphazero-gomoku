@@ -45,10 +45,19 @@ public:
   // defender may answer a three by covering its two four-squares or by
   // countering with an own four. Still one-sided: proves attacker forcing
   // wins only. Heavier than pure VCF; intended for root probes.
+  // VCT-lite: when enabled, attack generation also includes moves creating a
+  // *live three* chain (single-line forcing) plus hub double-three killers.
   void set_enable_threes(bool on) { enable_threes_ = on; }
+  // Long live-three chains are the explosive part of VCT. Default OFF: callers
+  // may enable killers + short chains only, while keeping stable behavior.
+  void set_enable_three_chaining(bool on) { enable_three_chaining_ = on; }
   // Opt-in: make three-threatening defenses complete within the threat zone
-  // (slower, eliminates the known false-positive hole).
+  // (slower, eliminates the known interference false-positive hole).
   void set_extended_three_defense(bool on) { extended_three_defense_ = on; }
+  // Cap on how deep live-three / hub-killer branches are allowed to unfold;
+  // those enumerations are the expensive part of VCT. 0 disables them.
+  void set_max_three_depth(int d) { max_three_depth_ = d; }
+
 
   // --- static pattern helpers (exposed for testing / MCTS leaf gating) ---
   // Empty cells where placing `color` completes five-or-more.
@@ -60,6 +69,11 @@ public:
   // Cells where placing `color` creates a live three (next move can create
   // an open four). Slower than FivePoints; used by VCT-lite only.
   static void LiveThreeMoves(const std::array<int8_t, kBoardCells> &board,
+                             int color, std::vector<int> &out);
+  // "Killer" double threats hub-moves: moves at which two separate run
+  // directions each become a live three for `color`. The placed point is the
+  // hub; the defense must neutralize every branch.
+  static void HubKillerMoves(const std::array<int8_t, kBoardCells> &board,
                              int color, std::vector<int> &out);
 
   // Root defensive filter (piskvork --vcf): given root candidates in engine
@@ -107,6 +121,11 @@ private:
   // empty cell near the attacker's move (interference/counter-play), killing
   // the false-positive windows of the lite enumeration at some node cost.
   bool extended_three_defense_ = false;
+  bool enable_three_chaining_ = false;
+  // Depth cap for three/hub-killer branches: those are the expensive part of
+  // VCT; keeping them to shallow game-tree depth keeps `--vct` usable while
+  // pure-VCF paths stay unchanged.
+  int max_three_depth_ = 6;
   uint64_t nodes_ = 0;
   int root_move_ = -1;
   std::array<uint64_t, kBoardCells * 2> zobrist_{}; // [cell][black?0:1]

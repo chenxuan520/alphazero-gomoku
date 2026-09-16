@@ -1508,6 +1508,56 @@ void TestVctThreesOnKeepsVcfSolves() {
   CHECK(solver.Solve(b, Gomoku::kBlack, 300000));
 }
 
+void TestVctHubKillerSolves() {
+  // Black has open pairs on row 4 (cols 2..3) and column 4 (rows 2..3).
+  // Playing the hub (4,4) anchors TWO live threes at once; the defender
+  // cannot neutralize both branches, so the VCT proof must start there.
+  auto b = ParseBoard({"...............",
+                       "...............",
+                       "....X..........",  // (2,4)
+                       "....X..........",  // (3,4)
+                       "..XX...........",  // (4,2),(4,3)
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "...............",
+                       "..........O....",  // white decoy
+                       "..........O....",
+                       "...............",
+                       "...............",
+                       "..............."});
+  std::vector<int> killers;
+  VcfSolver::HubKillerMoves(b, Gomoku::kBlack, killers);
+  CHECK(std::find(killers.begin(), killers.end(), A(4, 4)) != killers.end());
+  VcfSolver solver;
+  solver.set_enable_threes(true);
+  solver.set_extended_three_defense(true);
+  CHECK(solver.Solve(b, Gomoku::kBlack, 500000));
+  CHECK(!solver.undecided());
+
+  // Sealing the vertical line on both sides (white at (1,4) and (6,4)) kills
+  // the hub property: only the horizontal branch remains live.
+  auto sealed = ParseBoard({"...............",
+                            "....O..........",
+                            "....X..........",
+                            "....X..........",
+                            "..XX...........",
+                            "...............",
+                            "....O..........",
+                            "...............",
+                            "...............",
+                            "...............",
+                            "..........O....",
+                            "...............",
+                            "...............",
+                            "...............",
+                            "..............."});
+  killers.clear();
+  VcfSolver::HubKillerMoves(sealed, Gomoku::kBlack, killers);
+  CHECK(std::find(killers.begin(), killers.end(), A(4, 4)) == killers.end());
+}
+
 void TestVctExtendedDefenseKeepsProofs() {
   // The extended three-defense enumeration must not break either polarity:
   // the open-four chain still proves, and the dead pair still fails.
@@ -1625,6 +1675,7 @@ int main() {
   TestVcfGameIntegration();
   TestVctHelperAndModeToggle();
   TestVctThreesOnKeepsVcfSolves();
+  TestVctHubKillerSolves();
   TestVctExtendedDefenseKeepsProofs();
   TestVcfRootDefenseFilter();
 
